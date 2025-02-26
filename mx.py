@@ -52,7 +52,7 @@ def main():
     parser = argparse.ArgumentParser(description="MySQL Brute Forcer")
     parser.add_argument('-l', '--username', required=True, help='MySQL username')
     parser.add_argument('-P', '--passwordlist', required=True, help='Password list file')
-    parser.add_argument('mysql', help='Target MySQL IP in format mysql://<target-ip>')
+    parser.add_argument('sql', help='Target MySQL IP in format mysql://<target-ip>')
 
     args = parser.parse_args()
 
