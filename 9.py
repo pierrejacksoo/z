@@ -6,4 +6,4 @@ def index():
     return "Hello from adapter 1!"
 
 if __name__ == "__main__":
-    app.run(host="10.0.1.12", port=5000)
+    app.run(host="192.168.56.1", port=5000)
