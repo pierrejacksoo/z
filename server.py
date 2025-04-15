@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 # Základní nastavení
 bot_list = {}  # Klíče jsou bot ID, hodnoty jsou info o botu (IP, status, OS, atd.)
-server_ip = "127.0.0.1"
+server_ip = "10.0.1.12"
 server_port = 4444
 last_online_check = {}
 
