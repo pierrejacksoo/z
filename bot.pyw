@@ -10,8 +10,8 @@ import psutil
 
 SOCKET_HOST = 'server_ip_here'  # Změň na IP serveru
 SOCKET_PORT = 4444
-SOCKET_KEY = b'sixteen byte key1234567890123456'  # 32 bytes key
-SOCKET_IV = b'initialvector123'  # 16 bytes IV
+SOCKET_KEY = b'd8f7b1c6e4a5e93a1c4d2f8a765b3e6d91c0e27a58f7c4b3e3d4f9a871c2b7dd'  # 32 bytes key
+SOCKET_IV = b'a7f3c1d8b0e2f4a9d3c7e1b2f6a8c9e0'  # 16 bytes IV
 
 # AES ENCRYPTION/DECRYPTION
 def encrypt_msg(msg):
