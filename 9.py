@@ -1,9 +1,10 @@
-from flask import Flask
-app = Flask(__name__)
+from geopy.geocoders import Nominatim
 
-@app.route('/')
-def index():
-    return "Hello from adapter 1!"
+# Inicializace geolokátora
+geolocator = Nominatim(user_agent="geoapiExercises")
 
-if __name__ == "__main__":
-    app.run(host="192.168.56.1", port=5000)
+# Získání informací o lokaci na základě názvu místa
+location = geolocator.geocode("Prague, Czech Republic")
+
+print(f"Address: {location.address}")
+print(f"Latitude: {location.latitude}, Longitude: {location.longitude}")
