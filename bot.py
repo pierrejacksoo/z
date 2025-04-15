@@ -7,7 +7,7 @@ import json
 import subprocess
 
 CNC_SERVER = "127.0.0.1"  # Replace with the actual CNC server's IP address
-CNC_PORT = 6666           # Port the CNC server is listening on
+CNC_PORT = 4444           # Port the CNC server is listening on
 
 def get_country_code():
     """
