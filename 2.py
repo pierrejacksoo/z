@@ -1,10 +1,4 @@
-import gps
+import geocoder
 
-session = gps.gps(mode=gps.WATCH_ENABLE)
-
-while True:
-    report = session.next()
-    if report['class'] == 'TPV':
-        print("Latitude:", getattr(report, 'lat', None))
-        print("Longitude:", getattr(report, 'lon', None))
-        break
+g = geocoder.ip('me')
+print(g.latlng)  # Např. [50.0870, 14.4208]
