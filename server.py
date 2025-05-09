@@ -17,7 +17,7 @@ def handle_client(client_socket, client_address):
         print(f"Client {client_address} connected.")
         with lock:
             connections.append(client_socket)
-
+    
         # Wait until at least two clients are connected
         while True:
             with lock:
@@ -33,8 +33,11 @@ def handle_client(client_socket, client_address):
                     break
                 
                 # Decode the message and print it
-                message = data.decode('utf-8')  # Assuming UTF-8 encoding
-                print(f"[{client_address}] {message}")
+                try:
+                    message = data.decode('utf-8')  # Assuming UTF-8 encoding
+                    print(f"[{client_address}] {message}")
+                except UnicodeDecodeError:
+                    print(f"[{client_address}] Message could not be decoded.")
 
                 # Broadcast the message to all other clients
                 with lock:
@@ -54,7 +57,7 @@ def relay_server():
         server_socket.bind((HOST, PORT))
         server_socket.listen(5)  # Allow up to 5 pending connections
         print("Server is listening on", (HOST, PORT))
-
+    
         while True:
             client_socket, client_address = server_socket.accept()
             threading.Thread(target=handle_client, args=(client_socket, client_address)).start()
