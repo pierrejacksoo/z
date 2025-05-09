@@ -277,13 +277,14 @@ class AESModeOfOperationCBC(AES):
 
 def pad(s, block_size=16):
     """
-    Pad a byte string to proper block size by appending null bytes
+    Pad a byte string to proper block size by appending null bytes.
     """
-    if not isinstance(s, str):
-        s = str(s, 'utf-8') if isinstance(s, bytes) else str(s)
-    padding = (block_size - len(s.encode('utf-8')) % block_size) * chr(0)
-    return s + padding
-    
+    if isinstance(s, str):
+        # Convert string to bytes if needed
+        s = s.encode('utf-8')
+    padding_length = block_size - (len(s) % block_size)
+    return s + bytes([0] * padding_length)
+
 def long_to_bytes(n, blocksize=0):
     """
     Convert an integer to a byte string.
@@ -351,35 +352,48 @@ def diffiehellman(connection):
 def encrypt_aes(plaintext, key):
     """
     AES-256-CBC encryption
-
     `Requires`
     :param str plaintext:   plain text/data
     :param str key:         session encryption key
     """
-    text = pad(plaintext)
-    iv = os.urandom(AESModeOfOperationCBC.block_size)  # Ensure IV is always 16 bytes
+    text = pad(plaintext)  # Pad the plaintext properly
+    iv = os.urandom(AESModeOfOperationCBC.block_size)  # Generate a random IV
     cipher = AESModeOfOperationCBC(key, iv=iv)
     output = b''.join(
-        [cipher.encrypt(text[x:x + AESModeOfOperationCBC.block_size]) for x in xrange(0, len(text), AESModeOfOperationCBC.block_size)])
+        [cipher.encrypt(text[x:x + AESModeOfOperationCBC.block_size]) 
+         for x in range(0, len(text), AESModeOfOperationCBC.block_size)]
+    )
     return base64.b64encode(iv + output)
+
+def fix_base64_padding(encoded_str):
+    """
+    Fix the padding of a Base64-encoded string to ensure its length is a multiple of 4.
+    """
+    missing_padding = len(encoded_str) % 4
+    if missing_padding != 0:
+        encoded_str += '=' * (4 - missing_padding)
+    return encoded_str
 
 def decrypt_aes(ciphertext, key):
     """
     AES-256-CBC decryption
-
     `Requires`
     :param str ciphertext:  Encrypted block of data (Base64 encoded)
     :param str key:         Session encryption key
     """
     try:
+        # Fix padding if necessary
+        def fix_base64_padding(encoded_str):
+            missing_padding = len(encoded_str) % 4
+            if missing_padding != 0:
+                encoded_str += '=' * (4 - missing_padding)
+            return encoded_str
+
         # Validate and decode the Base64-encoded ciphertext
         try:
-            ciphertext = base64.b64decode(ciphertext)
+            ciphertext = base64.b64decode(fix_base64_padding(ciphertext))
         except Exception as e:
             raise ValueError(f"Invalid Base64-encoded message: {str(e)}")
-
-        # Debugging: Log the length of the decoded ciphertext
-        print(f"Decoded ciphertext length: {len(ciphertext)}")
 
         # Check if the ciphertext is long enough to contain an IV
         if len(ciphertext) < AESModeOfOperationCBC.block_size:
@@ -387,27 +401,16 @@ def decrypt_aes(ciphertext, key):
 
         # Extract the IV
         iv = ciphertext[:AESModeOfOperationCBC.block_size]
-        print(f"Extracted IV length: {len(iv)}")
-
-        # Validate IV length
-        if len(iv) != AESModeOfOperationCBC.block_size:
-            raise ValueError(f"Invalid IV length during decryption. IV must be 16 bytes, but got {len(iv)} bytes.")
-
-        # Extract the actual ciphertext
-        ciphertext = ciphertext[len(iv):]
-        print(f"Ciphertext after IV extraction length: {len(ciphertext)}")
+        ciphertext = ciphertext[AESModeOfOperationCBC.block_size:]
 
         # Initialize AES mode of operation
         cipher = AESModeOfOperationCBC(key, iv=iv)
 
         # Decrypt each block
-        output = b''
-        for x in xrange(0, len(ciphertext), AESModeOfOperationCBC.block_size):
-            try:
-                output += cipher.decrypt(ciphertext[x:x + AESModeOfOperationCBC.block_size])
-            except ValueError as e:
-                print(f"Block decryption error: {str(e)}")
-                break
+        output = b''.join(
+            cipher.decrypt(ciphertext[x:x + AESModeOfOperationCBC.block_size])
+            for x in range(0, len(ciphertext), AESModeOfOperationCBC.block_size)
+        )
 
         # Remove padding
         return output.rstrip(chr(0).encode())
