@@ -366,14 +366,11 @@ def encrypt_aes(plaintext, key):
     return base64.b64encode(iv + output)
 
 def fix_base64_padding(encoded_str):
-    """
-    Fix the padding of a Base64-encoded string to ensure its length is a multiple of 4.
-    """
     missing_padding = len(encoded_str) % 4
     if missing_padding != 0:
         encoded_str += '=' * (4 - missing_padding)
     return encoded_str
-    
+
 def decrypt_aes(ciphertext, key):
     """
     AES-256-CBC decryption
@@ -382,7 +379,7 @@ def decrypt_aes(ciphertext, key):
     :param str key:         Session encryption key
     """
     try:
-        # Fix padding if necessary
+        # Fix Base64 padding
         def fix_base64_padding(encoded_str):
             missing_padding = len(encoded_str) % 4
             if missing_padding != 0:
