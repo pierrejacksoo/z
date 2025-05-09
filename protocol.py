@@ -373,7 +373,7 @@ def fix_base64_padding(encoded_str):
     if missing_padding != 0:
         encoded_str += '=' * (4 - missing_padding)
     return encoded_str
-
+    
 def decrypt_aes(ciphertext, key):
     """
     AES-256-CBC decryption
