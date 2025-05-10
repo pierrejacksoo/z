@@ -3,7 +3,7 @@ import threading
 
 # Constants
 HOST = '127.0.0.1'
-PORT = 65432
+PORT = 5222
 
 # Global variables to track connections
 connections = []
