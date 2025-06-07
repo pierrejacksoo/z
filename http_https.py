@@ -61,11 +61,56 @@ def detect_form_fields(html):
     login_forms = []
     # Common PHP login field names
     USER_CANDIDATES = [
-        r"user", r"uname", r"login", r"email", r"userid", r"username", r"user_name", r"usr"
-    ]
-    PASS_CANDIDATES = [
-        r"pass", r"password", r"passwd", r"pwd", r"userpass"
-    ]
+    r"user", r"uname", r"login", r"email", r"userid", r"username", r"user_name", r"usr",
+    r"account", r"member", r"profile", r"user_id", r"accountname", r"membername", r"nickname", r"handle",
+    r"useraccount", r"userprofile", r"userlogin", r"useremail", r"mail", r"user_mail", r"accountid", r"account_id",
+    r"contact", r"contact_email", r"contactname", r"usercontact", r"user_mailid", r"userhandle", r"usernick", r"nickname",
+    r"person", r"personid", r"person_name", r"personlogin", r"person_email", r"personid", r"personaccount", r"usernumber",
+    r"useridnumber", r"user_num", r"usercode", r"user_code", r"memberid", r"memberidnumber", r"member_id", r"member_code",
+    r"client", r"clientid", r"clientname", r"client_user", r"clientaccount", r"clientlogin", r"clientemail", r"userclient",
+    r"customer", r"customerid", r"customer_name", r"customerlogin", r"customeremail", r"customernumber", r"usercustomer",
+    r"subscriber", r"subscriberid", r"subscriber_name", r"subscriberlogin", r"subscriberemail", r"subscribernumber",
+    r"registrant", r"registrantid", r"registrant_name", r"registrantlogin", r"registrantemail", r"registrantnumber",
+    r"participant", r"participantid", r"participant_name", r"participantlogin", r"participantemail", r"participantnumber",
+    r"admin", r"adminid", r"admin_name", r"adminlogin", r"adminemail", r"adminnumber", r"useradmin", r"user_admin",
+    r"operator", r"operatorid", r"operator_name", r"operatorlogin", r"operatoremail", r"operatornumber", r"useroperator",
+    r"staff", r"staffid", r"staff_name", r"stafflogin", r"staffemail", r"staffnumber", r"userstaff",
+    r"employee", r"employeeid", r"employee_name", r"employeelogin", r"employeeemail", r"employeenumber", r"useremployee",
+    r"identity", r"identityid", r"identity_name", r"identitylogin", r"identityemail", r"identitynumber", r"useridentity",
+    r"accountnumber", r"useraccountnumber", r"name", r"fullname", r"userfullname", r"displayname", r"userdisplay",
+    r"owner", r"ownerid", r"ownername", r"ownerlogin", r"owneremail", r"ownernumber", r"userowner",
+    r"auth_user", r"authid", r"authname", r"authlogin", r"authemail", r"authnumber", r"userauth",
+    r"author", r"authorid", r"authorname", r"authorlogin", r"authoremail", r"authornumber", r"userauthor",
+    r"principal", r"principalid", r"principalname", r"principallogin", r"principalemail", r"principalnumber",
+    r"account_holder", r"user_account_holder", r"login_id", r"user_login_id", r"member_login_id", r"account_login_id",
+    r"user_ref", r"userreference", r"userref", r"userkey", r"user_key", r"user_token", r"user_identifier", r"user_label",
+    r"user_tag", r"userattr", r"userproperty", r"userval", r"user_value", r"userinput", r"user_entry", r"user_record",
+    r"user_field", r"userparam", r"user_parameter", r"user_arg"
+]
+
+PASS_CANDIDATES = [
+    r"pass", r"password", r"passwd", r"pwd", r"userpass", r"passcode", r"pass_word", r"passphrase",
+    r"secret", r"secrete", r"secretkey", r"secret_key", r"usersecret", r"key", r"private_key", r"privatekey",
+    r"authpass", r"loginpass", r"login_password", r"account_password", r"accountpass", r"memberpass", r"member_password",
+    r"adminpass", r"admin_password", r"adminpwd", r"admin_secret", r"operatorpass", r"operator_password", r"clientpass",
+    r"client_password", r"userpwd", r"user_password", r"user_passwd", r"user_passcode", r"securitycode", r"security_code",
+    r"accesscode", r"access_code", r"accesskey", r"access_key", r"token", r"apitoken", r"api_token", r"auth_token",
+    r"sessionpass", r"session_password", r"sessionkey", r"session_key", r"sessiontoken", r"session_token", r"hash",
+    r"hashpass", r"hash_password", r"encryptedpass", r"encrypted_password", r"encryptedpwd", r"cryptpass", r"crypt_password",
+    r"cryptpwd", r"pin", r"pincode", r"pin_code", r"securitypin", r"security_pin", r"passphrase", r"phrase",
+    r"unlockcode", r"unlock_code", r"unlockkey", r"unlock_key", r"unlocktoken", r"unlock_token", r"resetcode",
+    r"reset_code", r"password_reset", r"recoverycode", r"recovery_code", r"recoverykey", r"recovery_key", r"pass_reset",
+    r"temp_pass", r"temporary_password", r"temp_password", r"temppass", r"one_time_password", r"otp", r"onetimepass",
+    r"onetimepassword", r"one_time_pass", r"one_time_key", r"changepass", r"change_password", r"newpass", r"new_password",
+    r"newpwd", r"oldpass", r"old_password", r"oldpwd", r"currentpass", r"current_password", r"currentpwd",
+    r"userpin", r"user_pin", r"memberpin", r"member_pin", r"clientpin", r"client_pin", r"apipass", r"api_pass",
+    r"apipassword", r"api_password", r"apikey", r"api_key", r"authkey", r"auth_key", r"authpwd", r"auth_password",
+    r"loginpwd", r"login_password", r"login_key", r"login_secret", r"access_token", r"tokenpw", r"token_pwd",
+    r"resetpwd", r"reset_password", r"password1", r"password2", r"password3", r"password4", r"password5",
+    r"dbpassword", r"db_password", r"database_password", r"databasepass", r"dbpass", r"db_pass", r"dbpwd", r"db_pwd",
+    r"pwd1", r"pwd2", r"pwd3", r"pwd4", r"pwd5", r"mailpassword", r"mail_password", r"emailpassword", r"email_password",
+    r"mailpass", r"mail_pass", r"emailpass", r"email_pass", r"ftp_password", r"ftppass", r"ftppwd", r"ftp_passwd"
+]
     for form in forms:
         inputs = form.find_all("input")
         field_names = {"username": None, "password": None, "csrf": None, "others": {}}
