@@ -895,3 +895,50 @@ def ecdhe_validate_public_key(pubkey):
     if check is not None:
         raise ValueError('Public key is not in the correct subgroup')
     return True
+
+try:
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes, hmac
+    from cryptography.hazmat.backends import default_backend
+except ImportError:
+    HKDF = None
+    hashes = None
+    hmac = None
+    default_backend = None
+
+def hkdf_sha256(key_material, length, salt=None, info=b""):
+    """
+    HKDF (HMAC-based Extract-and-Expand Key Derivation Function) using SHA-256.
+
+    :param key_material: Initial keying material (bytes)
+    :param length: Length of output key in bytes (int)
+    :param salt: Optional salt (bytes or None)
+    :param info: Optional context/application specific info (bytes)
+    :return: Derived key (bytes)
+    :raises ImportError: If cryptography library is not installed
+    """
+    if HKDF is None or hashes is None or default_backend is None:
+        raise ImportError("cryptography library is required for hkdf_sha256")
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=length,
+        salt=salt,
+        info=info,
+        backend=default_backend(),
+    )
+    return hkdf.derive(key_material)
+
+def hmac_sha256(key, data):
+    """
+    HMAC-SHA256 using cryptography.
+
+    :param key: Secret key (bytes)
+    :param data: Data to authenticate (bytes)
+    :return: HMAC digest (bytes)
+    :raises ImportError: If cryptography library is not installed
+    """
+    if hmac is None or hashes is None or default_backend is None:
+        raise ImportError("cryptography library is required for hmac_sha256")
+    h = hmac.HMAC(key, hashes.SHA256(), backend=default_backend())
+    h.update(data)
+    return h.finalize()
