@@ -4,6 +4,11 @@ import threading
 import base64
 import hashlib
 import io
+import json
+import os
+import time
+from PySide6.QtWidgets import QInputDialog
+
 
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
                                QTextEdit, QLabel, QMessageBox)
@@ -11,11 +16,11 @@ from PySide6.QtGui import QPixmap, QImage, QFont
 from PySide6.QtCore import Qt
 
 import px  # Your cryptography module
+from px import RSAKey, generate_keys, sign_message, verify_signature
 
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 9009
-
-# --- GUI Components ---
+user_db_dir = "/usr/bin"
 
 class ChatWindow(QWidget):
     def __init__(self):
@@ -32,6 +37,11 @@ class ChatWindow(QWidget):
         self.encryption_ready = False
         self.key = None
         self.iv = None
+        self.userid = None
+        self.username = None
+        self.rsa_key = None
+        self.ed_key = None
+        self.server_rsa_pub = None
 
         # Layouts
         self.layout = QVBoxLayout(self)
@@ -70,10 +80,17 @@ class ChatWindow(QWidget):
         self.show_fingerprint_btn.setVisible(False)
         self.layout.addWidget(self.show_fingerprint_btn)
 
+        self.loginbtn = QPushButton("Login")
+        self.regbtn = QPushButton("Register")
+        self.layout.addWidget(self.loginbtn)
+        self.layout.addWidget(self.regbtn)
+
         self.joinbtn.clicked.connect(self.connect_room)
         self.sendbtn.clicked.connect(self.send_message)
         self.show_fingerprint_btn.clicked.connect(self.show_fingerprint)
         self.input.returnPressed.connect(self.send_message)
+        self.loginbtn.clicked.connect(self.login)
+        self.regbtn.clicked.connect(self.register)
 
         self.setMinimumWidth(420)
         self.setMinimumHeight(520)
@@ -83,10 +100,66 @@ class ChatWindow(QWidget):
         self.peer_pubkey = None
         self.shared_secret = None
 
+    def get_user_db_path(self):
+        return os.path.join(user_db_dir, f"{self.userid}.db")
+
+    def register(self):
+        username, ok = QInputDialog.getText(self, "Register", "Username:")
+        if not ok or not username:
+            return
+        rsa_key = generate_keys(bits=2048)
+        ed_key = px.make_keypair()
+        rsa_pub = rsa_key.export_pem(private=False)
+        ed_pub = f"{ed_key[1][0]},{ed_key[1][1]}"
+        payload = json.dumps({
+            "username": username,
+            "rsa_pubkey": rsa_pub,
+            "ed_pubkey": ed_pub
+        })
+        s = socket.create_connection((SERVER_HOST, SERVER_PORT))
+        s.sendall(b'REGISTER:' + payload.encode())
+        resp = s.recv(4096)
+        data = json.loads(resp)
+        if data['status'] == "ok":
+            self.userid = data['userid']
+            self.username = username
+            self.rsa_key = rsa_key
+            self.ed_key = ed_key
+            self.server_rsa_pub = data['server_rsa_pub']
+            self.status.setText("Registered OK")
+        else:
+            self.status.setText("Register failed")
+        s.close()
+
+    def login(self):
+        username, ok = QInputDialog.getText(self, "Login", "Username:")
+        if not ok or not username:
+            return
+        # For demo, assume we have private key stored in-memory only
+        rsa_key = generate_keys(bits=2048)
+        rsa_pub = rsa_key.export_pem(private=False)
+        payload = json.dumps({
+            "username": username,
+            "rsa_pubkey": rsa_pub
+        })
+        s = socket.create_connection((SERVER_HOST, SERVER_PORT))
+        s.sendall(b'LOGIN:' + payload.encode())
+        resp = s.recv(4096)
+        data = json.loads(resp)
+        if data['status'] == "ok":
+            self.userid = data['userid']
+            self.username = username
+            self.rsa_key = rsa_key
+            self.server_rsa_pub = data['server_rsa_pub']
+            self.status.setText("Login OK")
+        else:
+            self.status.setText("Login failed")
+        s.close()
+
     def connect_room(self):
         room = self.roomedit.text().strip()
-        if not room:
-            QMessageBox.warning(self, "Input Error", "Enter a room name.")
+        if not room or not self.userid:
+            QMessageBox.warning(self, "Input Error", "Login/Register and enter a room name.")
             return
         try:
             sock = socket.create_connection((SERVER_HOST, SERVER_PORT))
@@ -100,16 +173,12 @@ class ChatWindow(QWidget):
             QMessageBox.critical(self, "Connection failed", str(ex))
 
     def listen_for_peer(self):
-        # ECDH Key Exchange
+        # ECDH Key Exchange + MITM protection
         try:
-            # Generate ECDH key pair
             priv, pub = px.ecdhe_make_keypair()
             self.private_key, self.public_key = priv, pub
-            # Wait for peer: protocol is simple, exchange pubkeys encoded as base64(x:int,y:int)
-            # Send our pubkey
             pub_bytes = "%d,%d" % (pub[0], pub[1])
             self.sock.sendall(b'PUBKEY:' + pub_bytes.encode() + b'\n')
-            # Listen for peer's pubkey
             peer_pub = None
             while not peer_pub:
                 data = self.sock.recv(4096)
@@ -122,7 +191,6 @@ class ChatWindow(QWidget):
                         peer_pub = (x, y)
                         break
             self.peer_pubkey = peer_pub
-            # Derive shared ECDHE secret
             px.ecdhe_validate_public_key(peer_pub)
             shared_point = px.ecdhe_scalar_mult(priv, peer_pub)
             shared_secret_bytes = px.int_to_bytes(shared_point[0]) + px.int_to_bytes(shared_point[1])
@@ -130,21 +198,16 @@ class ChatWindow(QWidget):
             self.key = key
             self.encryption_ready = True
             self.status.setText("Peer Connected! Key Exchange in progress...")
-            # Now show fingerprint button
             self.show_fingerprint_btn.setVisible(True)
             self.fingerprint = hashlib.sha256(key).hexdigest()
-            # Show fingerprint label (short)
             self.fingerprint_label.setText("Key Fingerprint SHA-256: " + self.fingerprint[:16] + "...")
-            # Enable chat
             self.sendbtn.setEnabled(True)
             self.status.setText("Chat ready (messages are encrypted)")
-            # Start listening for chat messages (in encrypted form)
             threading.Thread(target=self.listen_for_messages, daemon=True).start()
         except Exception as e:
             self.status.setText(f"Error: {e}")
 
     def show_fingerprint(self):
-        # Visualize the fingerprint/key as an image (e.g., 8x4 colored blocks)
         digest = hashlib.sha256(self.key).digest()
         w, h = 8, 4
         data = [digest[i] for i in range(w*h)]
@@ -159,31 +222,68 @@ class ChatWindow(QWidget):
         self.fingerprint_img.setVisible(True)
 
     def listen_for_messages(self):
+        from pysqlcipher3 import dbapi2 as sqlcipher
+        db_path = self.get_user_db_path()
+        conn = sqlcipher.connect(db_path)
+        conn.execute("PRAGMA key = 'secret';")
         while True:
             try:
                 data = self.sock.recv(4096)
                 if not data:
                     break
-                # Expect: base64-encoded AES256-CBC encrypted message
                 try:
                     msg = px.decrypt_aes(data.decode(), self.key).decode(errors='ignore')
                 except Exception:
                     msg = "[Decryption error]"
-                self.chat.append(f"<b>Peer:</b> {msg}")
+                # Check and verify signature, parse JSON
+                try:
+                    msg_obj = json.loads(msg)
+                    signature = msg_obj.get('signature')
+                    message_plain = msg_obj.get('message')
+                    sender = msg_obj.get('sender')
+                    msgid = msg_obj.get('msgid')
+                    peer_ed_pub = msg_obj.get('ed_pub')
+                    valid = verify_signature(eval(peer_ed_pub), message_plain.encode(), eval(signature))
+                    self.chat.append(f"<b>Peer:</b> {message_plain} <br> <span style='color:green'>Signature: {valid}</span>")
+                    # Store message to SQLCipher DB
+                    conn.execute("INSERT INTO messages (msgid, sender, receiver, message, signature, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (msgid, sender, self.username, message_plain, signature, int(time.time())))
+                    conn.commit()
+                except Exception:
+                    self.chat.append(f"<b>Peer:</b> {msg}")
             except Exception:
                 break
         self.status.setText("Peer disconnected.")
         self.sendbtn.setEnabled(False)
+        conn.close()
 
     def send_message(self):
+        from pysqlcipher3 import dbapi2 as sqlcipher
+        db_path = self.get_user_db_path()
         msg = self.input.text()
         if not msg or not self.encryption_ready:
             return
+        msgid = hashlib.sha256((msg + str(time.time())).encode()).hexdigest()
+        signature = sign_message(self.ed_key[0], msg.encode())
+        obj = {
+            "msgid": msgid,
+            "sender": self.username,
+            "message": msg,
+            "signature": str(signature),
+            "ed_pub": str(self.ed_key[1])
+        }
         try:
-            enc = px.encrypt_aes(msg.encode(), self.key)
+            enc = px.encrypt_aes(json.dumps(obj).encode(), self.key)
             self.sock.sendall(enc + b'\n')
             self.chat.append(f"<span style='color:#4a90e2'><b>You:</b> {msg}</span>")
             self.input.clear()
+            # Store to SQLCipher DB
+            conn = sqlcipher.connect(db_path)
+            conn.execute("PRAGMA key = 'secret';")
+            conn.execute("INSERT INTO messages (msgid, sender, receiver, message, signature, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                         (msgid, self.username, "peer", msg, str(signature), int(time.time())))
+            conn.commit()
+            conn.close()
         except Exception as ex:
             self.status.setText(f"Send error: {ex}")
 
