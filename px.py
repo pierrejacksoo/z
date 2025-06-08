@@ -13,7 +13,10 @@ import sys
 import copy
 import struct
 import base64
-
+import collections
+import secrets
+import hashlib
+import random
 
 RSA_KEY_BITS = 2048
 RSA_PRIME_BITS = RSA_KEY_BITS // 2
