@@ -1,66 +1,72 @@
 import socket
 import threading
 
-# Constants
-HOST = '127.0.0.1'
-PORT = 5222
+HOST = '0.0.0.0'
+PORT = 9009
 
-# Global variables to track connections
-connections = []
+# Room name ➔ [client1_sock, client2_sock]
+rooms = {}
 lock = threading.Lock()
 
-def handle_client(client_socket, client_address):
-    """
-    Handles communication for a connected client.
-    """
-    with client_socket:
-        print(f"Client {client_address} connected.")
-        with lock:
-            connections.append(client_socket)
-    
-        # Wait until at least two clients are connected
-        while True:
-            with lock:
-                if len(connections) >= 2:
-                    break
-            print("Waiting for peer...")
-        
+def relay(client_sock, peer_sock):
+    while True:
         try:
-            while True:
-                # Receive data from the client
-                data = client_socket.recv(1024)
-                if not data:
-                    break
-                
-                # Decode the message and print it
-                try:
-                    message = data.decode('utf-8')  # Assuming UTF-8 encoding
-                    print(f"[{client_address}] {message}")
-                except UnicodeDecodeError:
-                    print(f"[{client_address}] Message could not be decoded.")
+            data = client_sock.recv(4096)
+            if not data:
+                break
+            peer_sock.sendall(data)
+        except Exception:
+            break
+    client_sock.close()
+    peer_sock.close()
 
-                # Broadcast the message to all other clients
-                with lock:
-                    for conn in connections:
-                        if conn != client_socket:
-                            conn.sendall(data)
-        finally:
-            with lock:
-                connections.remove(client_socket)
-            print(f"Client {client_address} disconnected.")
+def handle_client(sock):
+    try:
+        room = sock.recv(256).decode('utf-8').strip()
+        if not room:
+            sock.close()
+            return
+        with lock:
+            if room not in rooms:
+                rooms[room] = [sock]
+                peer = None
+            else:
+                rooms[room].append(sock)
+                peer = rooms[room][0]
+                if len(rooms[room]) > 2:
+                    # Only two clients per room
+                    sock.sendall(b'Room full')
+                    sock.close()
+                    return
+        if not peer:
+            # Wait for peer
+            try:
+                while True:
+                    if len(rooms[room]) > 1:
+                        break
+                    threading.Event().wait(0.5)
+            except Exception:
+                pass
+        # Get peer (should have 2 clients now)
+        with lock:
+            peer_sock = [s for s in rooms[room] if s != sock][0]
+        # Start relaying both ways
+        t1 = threading.Thread(target=relay, args=(sock, peer_sock), daemon=True)
+        t2 = threading.Thread(target=relay, args=(peer_sock, sock), daemon=True)
+        t1.start()
+        t2.start()
+    except Exception:
+        sock.close()
 
-def relay_server():
-    """
-    A simple relay server that forwards data between clients.
-    """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-        server_socket.bind((HOST, PORT))
-        server_socket.listen(5)  # Allow up to 5 pending connections
-        print("Server is listening on", (HOST, PORT))
-    
+def main():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((HOST, PORT))
+        s.listen()
+        print(f'Server running on {HOST}:{PORT}')
         while True:
-            client_socket, client_address = server_socket.accept()
-            threading.Thread(target=handle_client, args=(client_socket, client_address)).start()
+            client_sock, addr = s.accept()
+            threading.Thread(target=handle_client, args=(client_sock,), daemon=True).start()
 
 if __name__ == "__main__":
-    relay_server()
+    main()
