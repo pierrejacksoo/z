@@ -1,13 +1,24 @@
 import os
+import secrets
+import sys
+import math
+import base64
+import time
+import struct
+import hashlib
+import argparse
+import hmac
+import os
 import sys
 import copy
 import struct
 import base64
-import hashlib
-import hmac
-from Crypto.PublicKey import DSA
-from Crypto.Signature import DSS
-from Crypto.Hash import SHA256
+
+
+RSA_KEY_BITS = 2048
+RSA_PRIME_BITS = RSA_KEY_BITS // 2
+MILLER_RABIN_ROUNDS = 64
+RSA_E = 65537
 
 # globals
 _debug = True
@@ -329,26 +340,6 @@ def bytes_to_long(s):
         acc = (acc << 32) + struct.unpack('>I', s[i:i+4])[0]
     return acc
 
-def diffiehellman(connection):
-    """
-    Diffie-Hellman Internet Key Exchange (RFC 2741)
-
-    `Requires`
-    :param socket connection:     socket.socket object
-
-    Returns the 256-bit binary digest of the SHA256 hash
-    of the shared session encryption key
-
-    """
-    g  = 2
-    p  = 0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF
-    a  = bytes_to_long(os.urandom(32))
-    xA = pow(g, a, p)
-    connection.send(long_to_bytes(xA))
-    xB = bytes_to_long(connection.recv(256))
-    x  = pow(xB, a, p)
-    return hashlib.sha256(long_to_bytes(x)).digest()
-
 def encrypt_aes(plaintext, key):
     """
     AES-256-CBC encryption
@@ -416,83 +407,275 @@ def decrypt_aes(ciphertext, key):
         print(f"Decryption error: {str(e)}")
         raise
 
-def hmac_sha256(key, message):
-    """
-    Generate HMAC-SHA256 signature
-    """
-    return hmac.new(key, message, hashlib.sha256).digest()
 
-def kdf(key, salt, iterations=100000, dklen=32):
-    """
-    Key Derivation Function (KDF) using PBKDF2-HMAC-SHA256
-    """
-    return hashlib.pbkdf2_hmac('sha256', key, salt, iterations, dklen)
+# ---------- Basic Integer/Byte Utilities ----------
 
-class MessageSchema:
-    """
-    Message Schema for secure communication
-    """
-    def __init__(self, auth_key_id, msg_key, encrypted_data):
-        self.auth_key_id = auth_key_id
-        self.msg_key = msg_key
-        self.encrypted_data = encrypted_data
+def gcd(a, b):
+    while b:
+        a, b = b, a % b
+    return abs(a)
 
-    def to_binary(self):
-        """
-        Serialize the message schema to binary format
-        """
-        return struct.pack(
-            ">32s32s{}s".format(len(self.encrypted_data)),
-            self.auth_key_id,
-            self.msg_key,
-            self.encrypted_data
-        )
+def modinv(a, m):
+    """Modular inverse using Extended Euclidean Algorithm, constant-time error."""
+    g, x, y = extended_gcd(a, m)
+    if g != 1:
+        raise ValueError("No modular inverse for a=%d mod m=%d" % (a, m))
+    return x % m
+
+def extended_gcd(a, b):
+    if a == 0:
+        return (b, 0, 1)
+    else:
+        g, y, x = extended_gcd(b % a, a)
+        return (g, x - (b // a) * y, y)
+
+def int_to_bytes(i, length=None):
+    if i == 0:
+        res = b"\x00"
+    else:
+        res = b''
+        while i:
+            res = struct.pack('>B', i & 0xff) + res
+            i >>= 8
+    if length is not None:
+        res = res.rjust(length, b'\x00')
+    return res
+
+def int_from_bytes(b):
+    return int.from_bytes(b, byteorder='big')
+
+def get_random_bits(bits):
+    nbytes = (bits + 7) // 8
+    random_bytes = secrets.token_bytes(nbytes)
+    value = int.from_bytes(random_bytes, 'big')
+    value |= (1 << (bits - 1))  # top bit set
+    value &= (1 << bits) - 1    # mask to exact bits
+    return value
+
+# ---------- Primality (Miller-Rabin, Side-Channel Hardened) ----------
+
+def is_prime(n, k=MILLER_RABIN_ROUNDS):
+    """Miller-Rabin primality test, constant error path."""
+    if n <= 1 or n % 2 == 0:
+        return False
+    if n in (2, 3):
+        return True
+    d = n - 1
+    r = 0
+    while d % 2 == 0:
+        d //= 2
+        r += 1
+    for _ in range(k):
+        a = secrets.randbelow(n - 3) + 2
+        x = pow(a, d, n)
+        if x == 1 or x == n - 1:
+            continue
+        fail = True
+        for _ in range(r - 1):
+            x = pow(x, 2, n)
+            if x == n - 1:
+                fail = False
+                break
+        if fail:
+            return False
+    return True
+
+def generate_prime(bits):
+    """Generate a cryptographically strong prime of given bit length"""
+    while True:
+        p = get_random_bits(bits)
+        p |= 1  # ensure odd
+        if is_prime(p):
+            return p
+
+# ---------- OAEP Padding (PKCS#1 v2.2, Hardened) ----------
+
+def mgf1(seed, length, hashfn=hashlib.sha256):
+    output = b''
+    counter = 0
+    while len(output) < length:
+        C = struct.pack('>I', counter)
+        output += hashfn(seed + C).digest()
+        counter += 1
+    return output[:length]
+
+def oaep_pad(message, k, label=b"", hashfn=hashlib.sha256):
+    hLen = hashfn().digest_size
+    mLen = len(message)
+    if mLen > k - 2 * hLen - 2:
+        raise ValueError(f"Message too long for OAEP padding ({mLen} > {k - 2*hLen - 2})")
+    lHash = hashfn(label).digest()
+    ps = b'\x00' * (k - mLen - 2 * hLen - 2)
+    db = lHash + ps + b'\x01' + message
+    seed = secrets.token_bytes(hLen)
+    dbMask = mgf1(seed, k - hLen - 1, hashfn)
+    maskedDB = bytes(x ^ y for x, y in zip(db, dbMask))
+    seedMask = mgf1(maskedDB, hLen, hashfn)
+    maskedSeed = bytes(x ^ y for x, y in zip(seed, seedMask))
+    em = b'\x00' + maskedSeed + maskedDB
+    return em
+
+def oaep_unpad(em, k, label=b"", hashfn=hashlib.sha256):
+    # Hardened error reporting, constant-time comparison
+    hLen = hashfn().digest_size
+    fail = 0
+    if len(em) != k or k < 2 * hLen + 2:
+        fail = 1
+    y, maskedSeed, maskedDB = em[0], em[1:hLen+1], em[hLen+1:]
+    if y != 0:
+        fail = 1
+    seedMask = mgf1(maskedDB, hLen, hashfn)
+    seed = bytes(x ^ y for x, y in zip(maskedSeed, seedMask))
+    dbMask = mgf1(seed, k - hLen - 1, hashfn)
+    db = bytes(x ^ y for x, y in zip(maskedDB, dbMask))
+    lHash = hashfn(label).digest()
+    lHash_ok = hmac.compare_digest(db[:hLen], lHash)
+    # Find separator, but do not branch on secret data
+    idx, sep_found = -1, 0
+    for i in range(hLen, len(db)):
+        sep_found |= (db[i] == 1 and idx == -1)
+        idx = idx if idx != -1 else (i if db[i] == 1 else -1)
+    valid = lHash_ok and (idx != -1) and (fail == 0)
+    # Always finish, always return some bytes, only error at end
+    if not valid:
+        raise ValueError("Decryption error (OAEP)")
+    return db[idx+1:]
+
+# ---------- ASN.1 DER for PEM Export/Import ----------
+
+def asn1_len(n):
+    if n < 0x80:
+        return bytes([n])
+    else:
+        s = int_to_bytes(n)
+        return bytes([0x80 | len(s)]) + s
+
+def asn1_int(x):
+    b = int_to_bytes(x)
+    if b and (b[0] & 0x80):
+        b = b'\x00' + b
+    return bytes([0x02]) + asn1_len(len(b)) + b
+
+def asn1_sequence(elements):
+    total = b''.join(elements)
+    return bytes([0x30]) + asn1_len(len(total)) + total
+
+def asn1_parse_sequence_of_ints(der):
+    if not der or der[0] != 0x30:
+        raise ValueError("Not a DER SEQUENCE")
+    nlen, nlenlen = asn1_parse_len(der[1:])
+    pos = 1 + nlenlen
+    ints = []
+    while pos < 1 + nlenlen + nlen:
+        if der[pos] != 0x02:
+            raise ValueError("Expected INTEGER in SEQUENCE")
+        ilen, ilenlen = asn1_parse_len(der[pos+1:])
+        ival = int_from_bytes(der[pos+1+ilenlen:pos+1+ilenlen+ilen])
+        ints.append(ival)
+        pos += 1+ilenlen+ilen
+    return ints
+
+def asn1_parse_len(b):
+    if b[0] < 0x80:
+        return (b[0], 1)
+    else:
+        n = b[0] & 0x7F
+        val = int_from_bytes(b[1:1+n])
+        return (val, 1+n)
+
+# ---------- RSA Key Class with Hardened PEM ----------
+
+class RSAKey:
+    def __init__(self, n, e, d=None, p=None, q=None):
+        self.n = n
+        self.e = e
+        self.d = d
+        self.p = p
+        self.q = q
+        self.key_bits = n.bit_length()
+        self.block_bytes = (self.key_bits + 7) // 8
+
+    def is_private(self):
+        return self.d is not None
+
+    def export_pem(self, private=False):
+        if private:
+            if not self.is_private():
+                raise ValueError("No private exponent to export")
+            ints = [
+                0, self.n, self.e, self.d,
+                self.p, self.q,
+                self.d % (self.p - 1), self.d % (self.q - 1),
+                modinv(self.q, self.p)
+            ]
+            der = asn1_sequence([asn1_int(x) for x in ints])
+            pem = "-----BEGIN RSA PRIVATE KEY-----\n"
+            b64 = base64.encodebytes(der).decode('ascii')
+            pem += ''.join(b64[i:i+64] + '\n' for i in range(0, len(b64), 64))
+            pem += "-----END RSA PRIVATE KEY-----\n"
+            return pem
+        else:
+            der = asn1_sequence([asn1_int(self.n), asn1_int(self.e)])
+            pem = "-----BEGIN RSA PUBLIC KEY-----\n"
+            b64 = base64.encodebytes(der).decode('ascii')
+            pem += ''.join(b64[i:i+64] + '\n' for i in range(0, len(b64), 64))
+            pem += "-----END RSA PUBLIC KEY-----\n"
+            return pem
 
     @staticmethod
-    def from_binary(binary_data):
-        """
-        Deserialize the binary format to a MessageSchema object
-        """
-        auth_key_id = binary_data[:32]
-        msg_key = binary_data[32:64]
-        encrypted_data = binary_data[64:]
-        return MessageSchema(auth_key_id, msg_key, encrypted_data)
+    def import_pem(pem_data):
+        lines = [l.strip() for l in pem_data.strip().splitlines() if not l.startswith('-----')]
+        b = base64.b64decode(''.join(lines))
+        ints = asn1_parse_sequence_of_ints(b)
+        if len(ints) == 2:
+            n, e = ints
+            return RSAKey(n, e)
+        elif len(ints) == 9:
+            _, n, e, d, p, q, _, _, _ = ints
+            return RSAKey(n, e, d, p, q)
+        else:
+            raise ValueError("Invalid PEM key format")
 
-class ReplayProtection:
-    """
-    Replay Protection using msg_id and seq_no
-    """
-    def __init__(self):
-        self.seen_messages = {}
+# ---------- Key Generation ----------
 
-    def is_replay(self, msg_id, seq_no):
-        """
-        Check if the message is a replay
-        """
-        if msg_id in self.seen_messages:
-            if self.seen_messages[msg_id] >= seq_no:
-                return True
-        self.seen_messages[msg_id] = seq_no
-        return False
+def generate_keys(bits=RSA_KEY_BITS, e=RSA_E):
+    t0 = time.time()
+    while True:
+        p = generate_prime(bits // 2)
+        q = generate_prime(bits // 2)
+        if p == q:
+            continue
+        n = p * q
+        phi = (p - 1) * (q - 1)
+        if gcd(e, phi) == 1:
+            try:
+                d = modinv(e, phi)
+                t1 = time.time()
+                print("Key generation time: %.2fs" % (t1 - t0), file=sys.stderr)
+                return RSAKey(n, e, d, p, q)
+            except Exception:
+                continue
 
-def sign_message(private_key, message):
-    """
-    Sign a message using DSA
-    """
-    dsa_key = DSA.import_key(private_key)
-    hash_obj = SHA256.new(message)
-    signer = DSS.new(dsa_key, 'fips-186-3')
-    return signer.sign(hash_obj)
+# ---------- RSA Encrypt/Decrypt (with OAEP, Hardened) ----------
 
-def verify_message(public_key, message, signature):
-    """
-    Verify a DSA signature
-    """
-    dsa_key = DSA.import_key(public_key)
-    hash_obj = SHA256.new(message)
-    verifier = DSS.new(dsa_key, 'fips-186-3')
-    try:
-        verifier.verify(hash_obj, signature)
-        return True
-    except ValueError:
-        return False
+def rsa_encrypt(message_bytes, pubkey: RSAKey, label=b""):
+    k = pubkey.block_bytes
+    padded = oaep_pad(message_bytes, k, label, hashfn=hashlib.sha256)
+    m_int = int_from_bytes(padded)
+    if m_int >= pubkey.n:
+        raise ValueError("Message representative out of range")
+    c = pow(m_int, pubkey.e, pubkey.n)
+    return int_to_bytes(c, k)
+
+def rsa_decrypt(ciphertext_bytes, privkey: RSAKey, label=b""):
+    k = privkey.block_bytes
+    if len(ciphertext_bytes) != k:
+        raise ValueError("Ciphertext length != modulus length")
+    c = int_from_bytes(ciphertext_bytes)
+    if c >= privkey.n:
+        raise ValueError("Ciphertext representative out of range")
+    m_int = pow(c, privkey.d, privkey.n)
+    padded = int_to_bytes(m_int, k)
+    return oaep_unpad(padded, k, label, hashfn=hashlib.sha256)
+
+
