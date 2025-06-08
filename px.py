@@ -679,3 +679,219 @@ def rsa_decrypt(ciphertext_bytes, privkey: RSAKey, label=b""):
     return oaep_unpad(padded, k, label, hashfn=hashlib.sha256)
 
 
+# --- ecdsa.py: ECDSA signature and verification ---
+
+import collections as _collections
+import hashlib as _hashlib
+import random as _random
+
+EllipticCurve = _collections.namedtuple('EllipticCurve', 'name p a b g n h')
+
+curve = EllipticCurve(
+    'secp256k1',
+    p=0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f,
+    a=0,
+    b=7,
+    g=(0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,
+       0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8),
+    n=0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141,
+    h=1,
+)
+
+def inverse_mod(k, p):
+    if k == 0:
+        raise ZeroDivisionError('division by zero')
+    if k < 0:
+        return p - inverse_mod(-k, p)
+    s, old_s = 0, 1
+    t, old_t = 1, 0
+    r, old_r = p, k
+    while r != 0:
+        quotient = old_r // r
+        old_r, r = r, old_r - quotient * r
+        old_s, s = s, old_s - quotient * s
+        old_t, t = t, old_t - quotient * t
+    gcd, x, y = old_r, old_s, old_t
+    assert gcd == 1
+    assert (k * x) % p == 1
+    return x % p
+
+def is_on_curve(point):
+    if point is None:
+        return True
+    x, y = point
+    return (y * y - x * x * x - curve.a * x - curve.b) % curve.p == 0
+
+def point_neg(point):
+    assert is_on_curve(point)
+    if point is None:
+        return None
+    x, y = point
+    result = (x, -y % curve.p)
+    assert is_on_curve(result)
+    return result
+
+def point_add(point1, point2):
+    assert is_on_curve(point1)
+    assert is_on_curve(point2)
+    if point1 is None:
+        return point2
+    if point2 is None:
+        return point1
+    x1, y1 = point1
+    x2, y2 = point2
+    if x1 == x2 and y1 != y2:
+        return None
+    if x1 == x2:
+        m = (3 * x1 * x1 + curve.a) * inverse_mod(2 * y1, curve.p)
+    else:
+        m = (y1 - y2) * inverse_mod(x1 - x2, curve.p)
+    x3 = m * m - x1 - x2
+    y3 = y1 + m * (x3 - x1)
+    result = (x3 % curve.p, -y3 % curve.p)
+    assert is_on_curve(result)
+    return result
+
+def scalar_mult(k, point):
+    assert is_on_curve(point)
+    if k % curve.n == 0 or point is None:
+        return None
+    if k < 0:
+        return scalar_mult(-k, point_neg(point))
+    result = None
+    addend = point
+    while k:
+        if k & 1:
+            result = point_add(result, addend)
+        addend = point_add(addend, addend)
+        k >>= 1
+    assert is_on_curve(result)
+    return result
+
+def make_keypair():
+    private_key = _random.randrange(1, curve.n)
+    public_key = scalar_mult(private_key, curve.g)
+    return private_key, public_key
+
+def hash_message(message):
+    message_hash = _hashlib.sha512(message).digest()
+    e = int.from_bytes(message_hash, 'big')
+    z = e >> (e.bit_length() - curve.n.bit_length())
+    assert z.bit_length() <= curve.n.bit_length()
+    return z
+
+def sign_message(private_key, message):
+    z = hash_message(message)
+    r = 0
+    s = 0
+    while not r or not s:
+        k = _random.randrange(1, curve.n)
+        x, y = scalar_mult(k, curve.g)
+        r = x % curve.n
+        s = ((z + r * private_key) * inverse_mod(k, curve.n)) % curve.n
+    return (r, s)
+
+def verify_signature(public_key, message, signature):
+    z = hash_message(message)
+    r, s = signature
+    w = inverse_mod(s, curve.n)
+    u1 = (z * w) % curve.n
+    u2 = (r * w) % curve.n
+    x, y = point_add(scalar_mult(u1, curve.g),
+                     scalar_mult(u2, public_key))
+    if (r % curve.n) == (x % curve.n):
+        return 'signature matches'
+    else:
+        return 'invalid signature'
+
+# --- ecdhe.py: ECDH key exchange (with secp256k1) ---
+
+import secrets as _secrets
+
+def ecdhe_inverse_mod(k, p):
+    if k == 0:
+        raise ZeroDivisionError('division by zero')
+    if k < 0:
+        return p - ecdhe_inverse_mod(-k, p)
+    s, old_s = 0, 1
+    t, old_t = 1, 0
+    r, old_r = p, k
+    while r != 0:
+        quotient = old_r // r
+        old_r, r = r, old_r - quotient * r
+        old_s, s = s, old_s - quotient * s
+        old_t, t = t, old_t - quotient * t
+    gcd, x, y = old_r, old_s, old_t
+    if gcd != 1:
+        raise ValueError(f'{k} has no inverse mod {p}')
+    return x % p
+
+def ecdhe_is_on_curve(point):
+    if point is None:
+        return True
+    x, y = point
+    return (y * y - x * x * x - curve.a * x - curve.b) % curve.p == 0
+
+def ecdhe_point_neg(point):
+    if not ecdhe_is_on_curve(point):
+        raise ValueError('point is not on the curve')
+    if point is None:
+        return None
+    x, y = point
+    return (x, (-y) % curve.p)
+
+def ecdhe_point_add(point1, point2):
+    if not ecdhe_is_on_curve(point1):
+        raise ValueError('point1 is not on the curve')
+    if not ecdhe_is_on_curve(point2):
+        raise ValueError('point2 is not on the curve')
+    if point1 is None:
+        return point2
+    if point2 is None:
+        return point1
+    x1, y1 = point1
+    x2, y2 = point2
+    if x1 == x2 and y1 != y2:
+        return None
+    if x1 == x2:
+        m = (3 * x1 * x1 + curve.a) * ecdhe_inverse_mod(2 * y1, curve.p) % curve.p
+    else:
+        m = (y2 - y1) * ecdhe_inverse_mod(x2 - x1, curve.p) % curve.p
+    x3 = (m * m - x1 - x2) % curve.p
+    y3 = (m * (x1 - x3) - y1) % curve.p
+    result = (x3, y3)
+    if not ecdhe_is_on_curve(result):
+        raise ValueError('resulting point is not on the curve')
+    return result
+
+def ecdhe_scalar_mult(k, point):
+    if not ecdhe_is_on_curve(point):
+        raise ValueError('point is not on the curve')
+    if k % curve.n == 0 or point is None:
+        return None
+    if k < 0:
+        return ecdhe_scalar_mult(-k, ecdhe_point_neg(point))
+    result = None
+    addend = point
+    bits = k.bit_length()
+    for i in reversed(range(bits)):
+        result = ecdhe_point_add(result, result)
+        bit = (k >> i) & 1
+        if bit == 1:
+            result = ecdhe_point_add(result, addend)
+    return result
+
+def ecdhe_make_keypair():
+    private_key = _secrets.randbelow(curve.n - 1) + 1
+    public_key = ecdhe_scalar_mult(private_key, curve.g)
+    return private_key, public_key
+
+def ecdhe_validate_public_key(pubkey):
+    if pubkey is None:
+        raise ValueError('Public key is point at infinity')
+    if not ecdhe_is_on_curve(pubkey):
+        raise ValueError('Public key is not on the curve')
+    check = ecdhe_scalar_mult(curve.n, pubkey)
+    if check is not None:
+        raise ValueError('Public key is not in the correct subgroup')
+    return True
