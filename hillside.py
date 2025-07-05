@@ -2,7 +2,7 @@ import bpy
 import bmesh
 import numpy as np
 
-def create_smooth_hillside(name="SmoothHillside", size=24, subdivisions=200, seed=42):
+def create_sophisticated_hillside(name="SophisticatedHillside", size=24, subdivisions=200, seed=42):
     np.random.seed(seed)
     
     # Create a grid mesh
@@ -18,23 +18,45 @@ def create_smooth_hillside(name="SmoothHillside", size=24, subdivisions=200, see
     bm = bmesh.new()
     bm.from_mesh(mesh)
 
-    # Smooth hillside with gentle undulations
+    # More sophisticated hillside: layered undulations, "terraces", valleys, and varied steepness
     for v in bm.verts:
         x, y = v.co.x, v.co.y
 
-        # Main slope
-        slope = (x * 0.45) + (y * 0.1)
+        # Main slope (steeper in some parts)
+        base_slope = (x * 0.44) + (y * 0.09)
+        slope_mod = 0.25 * np.tanh((x+6)/6) * np.cos(0.13*y)
 
-        # Gentle broad undulations (no rocks)
-        height = (
-            3 * np.exp(-((x-2)**2/100 + (y+5)**2/180)) +
-            1.2 * np.exp(-((x+8)**2/120 + (y+2)**2/100))
+        # Layered terraces (gentle step-like features)
+        terraces = 0.34 * np.sin(0.33*x + 0.45*y + seed/2)**3
+
+        # Broad undulations (large, smooth hills and dips)
+        big_hills = (
+            2.8 * np.exp(-((x-4)**2/77 + (y+7)**2/170)) +
+            1.7 * np.exp(-((x+6)**2/110 + (y-7)**2/143)) +
+            0.7 * np.exp(-((x-10)**2/250 + (y-2)**2/140))
         )
 
-        # Tiny variation for naturalness (no visible rocks)
-        gentle_noise = 0.18 * np.sin(0.15*x + 0.22*y + seed)
+        # Valley features (gentle dips, inspired by natural erosion)
+        valleys = -0.7 * np.exp(-((x+9)**2/115 + (y-6)**2/70))
+        
+        # Ridge/crest line (a line of higher elevation, inspired by reference)
+        ridge = 0.8 * np.exp(-((x-0.5*y)**2/100 + (y-4)**2/340))
 
-        v.co.z = slope + height + gentle_noise
+        # Natural gentle noise, but a bit more varied
+        gentle_noise = (
+            0.15 * np.sin(0.13*x + 0.19*y + seed) +
+            0.10 * np.cos(0.08*x - 0.16*y + seed*2)
+        )
+
+        # Composite height
+        v.co.z = (
+            base_slope + slope_mod +
+            terraces +
+            big_hills +
+            valleys +
+            ridge +
+            gentle_noise
+        )
 
     bm.to_mesh(mesh)
     bm.free()
@@ -62,11 +84,13 @@ def create_smooth_hillside(name="SmoothHillside", size=24, subdivisions=200, see
     colorramp = nodes.new(type="ShaderNodeValToRGB")
     geometry = nodes.new(type="ShaderNodeNewGeometry")
 
-    # Grass color ramp (inspired by image)
-    colorramp.color_ramp.elements.new(0.5)
-    colorramp.color_ramp.elements[0].color = (0.33, 0.41, 0.18, 1)
-    colorramp.color_ramp.elements[1].color = (0.48, 0.62, 0.20, 1)
-    colorramp.color_ramp.elements[2].color = (0.60, 0.65, 0.30, 1)
+    # Grass color ramp (deeper shades for more variety)
+    colorramp.color_ramp.elements.new(0.4)
+    colorramp.color_ramp.elements.new(0.7)
+    colorramp.color_ramp.elements[0].color = (0.27, 0.36, 0.16, 1)
+    colorramp.color_ramp.elements[1].color = (0.40, 0.56, 0.19, 1)
+    colorramp.color_ramp.elements[2].color = (0.52, 0.64, 0.28, 1)
+    colorramp.color_ramp.elements[3].color = (0.67, 0.73, 0.38, 1)
 
     links.new(geometry.outputs['Normal'], colorramp.inputs['Fac'])
     links.new(colorramp.outputs['Color'], diffuse.inputs['Color'])
@@ -78,5 +102,5 @@ def create_smooth_hillside(name="SmoothHillside", size=24, subdivisions=200, see
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
 
-# Create the smooth grassy hillside
-create_smooth_hillside()
+# Create the sophisticated grassy hillside
+create_sophisticated_hillside()
